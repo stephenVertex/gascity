@@ -745,7 +745,7 @@ export type EventEmitRequest = {
     type: string;
 };
 
-export type EventPayload = AdapterEventPayload | BeadEventPayload | BoundEventPayload | CityCreateSucceededPayload | CityLifecyclePayload | CityUnregisterSucceededPayload | GroupCreatedEventPayload | InboundEventPayload | MailEventPayload | NoPayload | OutboundEventPayload | RequestFailedPayload | SessionCreateSucceededPayload | SessionMessageSucceededPayload | SessionSubmitSucceededPayload | UnboundEventPayload | WorkerOperationEventPayload;
+export type EventPayload = AdapterEventPayload | BeadEventPayload | BoundEventPayload | CityCreateSucceededPayload | CityLifecyclePayload | CityUnregisterSucceededPayload | GroupCreatedEventPayload | InboundEventPayload | MailEventPayload | NoPayload | OutboundEventPayload | RequestFailedPayload | SessionCreateSucceededPayload | SessionMessageSucceededPayload | SessionSubmitSucceededPayload | SessionUpdatedPayload | UnboundEventPayload | WorkerOperationEventPayload;
 
 export type EventStreamEnvelope = {
     actor: string;
@@ -2260,6 +2260,14 @@ export type SessionActivityEvent = {
      * Session activity state: 'idle' or 'in-turn'.
      */
     activity: string;
+    /**
+     * Monotonically increasing permission mode version when known.
+     */
+    mode_version?: number;
+    /**
+     * Canonical runtime permission mode when known.
+     */
+    permission_mode?: string;
 };
 
 export type SessionAgentGetResponse = {
@@ -2283,6 +2291,10 @@ export type SessionBindingRecord = {
     SchemaVersion: number;
     SessionID: string;
     Status: BindingStatus;
+};
+
+export type SessionCapabilities = {
+    permission_mode: SessionPermissionModeCapability;
 };
 
 export type SessionCreateBody = {
@@ -2377,6 +2389,55 @@ export type SessionPendingResponse = {
     supported: boolean;
 };
 
+export type SessionPermissionModeCapability = {
+    /**
+     * Whether the running session can switch permission mode without restart.
+     */
+    live_switch: boolean;
+    /**
+     * Whether the current runtime permission mode can be read.
+     */
+    readable: boolean;
+    /**
+     * Reason permission mode is unavailable or limited.
+     */
+    reason?: string;
+    /**
+     * Whether runtime permission mode is supported for this provider/session.
+     */
+    supported: boolean;
+    /**
+     * Canonical permission mode values accepted by this session.
+     */
+    values?: Array<string> | null;
+};
+
+export type SessionPermissionModeInputBody = {
+    /**
+     * Canonical permission mode to apply to the running session.
+     */
+    permission_mode: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
+};
+
+export type SessionPermissionModeOutputBody = {
+    /**
+     * Session ID.
+     */
+    id: string;
+    /**
+     * Monotonically increasing session permission mode version.
+     */
+    mode_version: number;
+    /**
+     * Confirmed canonical permission mode.
+     */
+    permission_mode: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
+    /**
+     * Whether the provider verified the mode after applying it.
+     */
+    verified: boolean;
+};
+
 /**
  * Session raw transcript frame
  *
@@ -2428,6 +2489,7 @@ export type SessionResponse = {
     activity?: string;
     alias?: string;
     attached: boolean;
+    capabilities: SessionCapabilities;
     configured_named_session?: boolean;
     context_pct?: number;
     context_window?: number;
@@ -2440,6 +2502,7 @@ export type SessionResponse = {
     metadata?: {
         [key: string]: string;
     };
+    mode_version?: number;
     model?: string;
     options?: {
         [key: string]: string;
@@ -2466,7 +2529,15 @@ export type SessionStreamCommonEvent = SessionActivityEvent | PendingInteraction
 export type SessionStreamMessageEvent = {
     format: string;
     id: string;
+    /**
+     * Monotonically increasing permission mode version when known.
+     */
+    mode_version?: number;
     pagination?: PaginationInfo;
+    /**
+     * Canonical runtime permission mode when known.
+     */
+    permission_mode?: string;
     /**
      * Producing provider identifier (claude, codex, gemini, open-code, etc.).
      */
@@ -2482,7 +2553,15 @@ export type SessionStreamRawMessageEvent = {
      * Provider-native transcript frames, emitted verbatim as the provider wrote them.
      */
     messages: Array<SessionRawMessageFrame> | null;
+    /**
+     * Monotonically increasing permission mode version when known.
+     */
+    mode_version?: number;
     pagination?: PaginationInfo;
+    /**
+     * Canonical runtime permission mode when known.
+     */
+    permission_mode?: string;
     /**
      * Producing provider identifier (claude, codex, gemini, open-code, etc.). Consumers use this to dispatch per-provider frame parsing.
      */
@@ -2540,6 +2619,17 @@ export type SessionTranscriptGetResponse = {
      * Populated for conversation/text formats.
      */
     turns?: Array<OutputTurn> | null;
+};
+
+export type SessionUpdatedPayload = {
+    mode_version?: number;
+    options?: {
+        [key: string]: string;
+    };
+    permission_mode?: string;
+    provider?: string;
+    session_id?: string;
+    session_name?: string;
 };
 
 export type SlingInputBody = {
@@ -3533,7 +3623,7 @@ export type TypedEventStreamEnvelopeSessionUndrained = {
 export type TypedEventStreamEnvelopeSessionUpdated = {
     actor: string;
     message?: string;
-    payload: NoPayload;
+    payload: SessionUpdatedPayload;
     seq: number;
     subject?: string;
     ts: string;
@@ -4320,7 +4410,7 @@ export type TypedTaggedEventStreamEnvelopeSessionUpdated = {
     actor: string;
     city: string;
     message?: string;
-    payload: NoPayload;
+    payload: SessionUpdatedPayload;
     seq: number;
     subject?: string;
     ts: string;
@@ -9414,6 +9504,46 @@ export type GetV0CityByCityNameSessionByIdPendingResponses = {
 };
 
 export type GetV0CityByCityNameSessionByIdPendingResponse = GetV0CityByCityNameSessionByIdPendingResponses[keyof GetV0CityByCityNameSessionByIdPendingResponses];
+
+export type PostV0CityByCityNameSessionByIdPermissionModeData = {
+    body: SessionPermissionModeInputBody;
+    headers: {
+        /**
+         * Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+         */
+        'X-GC-Request': string;
+    };
+    path: {
+        /**
+         * City name.
+         */
+        cityName: string;
+        /**
+         * Session ID, alias, or runtime session_name.
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/v0/city/{cityName}/session/{id}/permission-mode';
+};
+
+export type PostV0CityByCityNameSessionByIdPermissionModeErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type PostV0CityByCityNameSessionByIdPermissionModeError = PostV0CityByCityNameSessionByIdPermissionModeErrors[keyof PostV0CityByCityNameSessionByIdPermissionModeErrors];
+
+export type PostV0CityByCityNameSessionByIdPermissionModeResponses = {
+    /**
+     * OK
+     */
+    200: SessionPermissionModeOutputBody;
+};
+
+export type PostV0CityByCityNameSessionByIdPermissionModeResponse = PostV0CityByCityNameSessionByIdPermissionModeResponses[keyof PostV0CityByCityNameSessionByIdPermissionModeResponses];
 
 export type PostV0CityByCityNameSessionByIdRenameData = {
     body: SessionRenameInputBody;

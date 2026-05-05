@@ -2029,6 +2029,9 @@
             "$ref": "#/components/schemas/SessionSubmitSucceededPayload"
           },
           {
+            "$ref": "#/components/schemas/SessionUpdatedPayload"
+          },
+          {
             "$ref": "#/components/schemas/UnboundEventPayload"
           },
           {
@@ -5512,6 +5515,16 @@
               "idle"
             ],
             "type": "string"
+          },
+          "mode_version": {
+            "description": "Monotonically increasing permission mode version when known.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "permission_mode": {
+            "description": "Canonical runtime permission mode when known.",
+            "type": "string"
           }
         },
         "required": [
@@ -5607,6 +5620,18 @@
           "ExpiresAt",
           "BindingGeneration",
           "Metadata"
+        ],
+        "type": "object"
+      },
+      "SessionCapabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "permission_mode": {
+            "$ref": "#/components/schemas/SessionPermissionModeCapability"
+          }
+        },
+        "required": [
+          "permission_mode"
         ],
         "type": "object"
       },
@@ -5756,6 +5781,98 @@
         ],
         "type": "object"
       },
+      "SessionPermissionModeCapability": {
+        "additionalProperties": false,
+        "properties": {
+          "live_switch": {
+            "description": "Whether the running session can switch permission mode without restart.",
+            "type": "boolean"
+          },
+          "readable": {
+            "description": "Whether the current runtime permission mode can be read.",
+            "type": "boolean"
+          },
+          "reason": {
+            "description": "Reason permission mode is unavailable or limited.",
+            "type": "string"
+          },
+          "supported": {
+            "description": "Whether runtime permission mode is supported for this provider/session.",
+            "type": "boolean"
+          },
+          "values": {
+            "description": "Canonical permission mode values accepted by this session.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "supported",
+          "readable",
+          "live_switch"
+        ],
+        "type": "object"
+      },
+      "SessionPermissionModeInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "permission_mode": {
+            "description": "Canonical permission mode to apply to the running session.",
+            "enum": [
+              "default",
+              "acceptEdits",
+              "plan",
+              "bypassPermissions"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "permission_mode"
+        ],
+        "type": "object"
+      },
+      "SessionPermissionModeOutputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Session ID.",
+            "type": "string"
+          },
+          "mode_version": {
+            "description": "Monotonically increasing session permission mode version.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "permission_mode": {
+            "description": "Confirmed canonical permission mode.",
+            "enum": [
+              "default",
+              "acceptEdits",
+              "plan",
+              "bypassPermissions"
+            ],
+            "type": "string"
+          },
+          "verified": {
+            "description": "Whether the provider verified the mode after applying it.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "permission_mode",
+          "mode_version",
+          "verified"
+        ],
+        "type": "object"
+      },
       "SessionRawMessageFrame": {
         "description": "Provider-native transcript frame. Gas City forwards the exact JSON the provider wrote to its session log, so the shape is provider-specific and can be any JSON value. The producing provider is identified by the Provider field on the enclosing envelope; consumers dispatch per-provider frame parsing keyed by that identifier.",
         "title": "Session raw transcript frame"
@@ -5839,6 +5956,9 @@
           "attached": {
             "type": "boolean"
           },
+          "capabilities": {
+            "$ref": "#/components/schemas/SessionCapabilities"
+          },
           "configured_named_session": {
             "type": "boolean"
           },
@@ -5873,6 +5993,11 @@
               "type": "string"
             },
             "type": "object"
+          },
+          "mode_version": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
           },
           "model": {
             "type": "string"
@@ -5923,7 +6048,8 @@
           "session_name",
           "created_at",
           "attached",
-          "running"
+          "running",
+          "capabilities"
         ],
         "type": "object"
       },
@@ -5951,8 +6077,18 @@
           "id": {
             "type": "string"
           },
+          "mode_version": {
+            "description": "Monotonically increasing permission mode version when known.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "pagination": {
             "$ref": "#/components/schemas/PaginationInfo"
+          },
+          "permission_mode": {
+            "description": "Canonical runtime permission mode when known.",
+            "type": "string"
           },
           "provider": {
             "description": "Producing provider identifier (claude, codex, gemini, open-code, etc.).",
@@ -5999,8 +6135,18 @@
               "null"
             ]
           },
+          "mode_version": {
+            "description": "Monotonically increasing permission mode version when known.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "pagination": {
             "$ref": "#/components/schemas/PaginationInfo"
+          },
+          "permission_mode": {
+            "description": "Canonical runtime permission mode when known.",
+            "type": "string"
           },
           "provider": {
             "description": "Producing provider identifier (claude, codex, gemini, open-code, etc.). Consumers use this to dispatch per-provider frame parsing.",
@@ -6118,6 +6264,35 @@
           "provider",
           "format"
         ],
+        "type": "object"
+      },
+      "SessionUpdatedPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "mode_version": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "options": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "permission_mode": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "session_name": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "SlingInputBody": {
@@ -8720,7 +8895,7 @@
             "type": "string"
           },
           "payload": {
-            "$ref": "#/components/schemas/NoPayload"
+            "$ref": "#/components/schemas/SessionUpdatedPayload"
           },
           "seq": {
             "format": "int64",
@@ -11067,7 +11242,7 @@
             "type": "string"
           },
           "payload": {
-            "$ref": "#/components/schemas/NoPayload"
+            "$ref": "#/components/schemas/SessionUpdatedPayload"
           },
           "seq": {
             "format": "int64",
@@ -21353,6 +21528,89 @@
         "summary": "Get v0 city by city name session by ID pending"
       }
     },
+    "/v0/city/{cityName}/session/{id}/permission-mode": {
+      "post": {
+        "operationId": "post-v0-city-by-city-name-session-by-id-permission-mode",
+        "parameters": [
+          {
+            "description": "Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.",
+            "in": "header",
+            "name": "X-GC-Request",
+            "required": true,
+            "schema": {
+              "description": "Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "City name.",
+            "in": "path",
+            "name": "cityName",
+            "required": true,
+            "schema": {
+              "description": "City name.",
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Session ID, alias, or runtime session_name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Session ID, alias, or runtime session_name.",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionPermissionModeInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionPermissionModeOutputBody"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          }
+        },
+        "summary": "Post v0 city by city name session by ID permission mode"
+      }
+    },
     "/v0/city/{cityName}/session/{id}/rename": {
       "post": {
         "operationId": "post-v0-city-by-city-name-session-by-id-rename",
@@ -21784,6 +22042,20 @@
             },
             "description": "OK",
             "headers": {
+              "GC-Session-Mode-Version": {
+                "description": "Monotonically increasing session permission mode version at the time streaming began, when known.",
+                "schema": {
+                  "description": "Monotonically increasing session permission mode version at the time streaming began, when known.",
+                  "type": "string"
+                }
+              },
+              "GC-Session-Permission-Mode": {
+                "description": "Canonical runtime permission mode at the time streaming began, when known.",
+                "schema": {
+                  "description": "Canonical runtime permission mode at the time streaming began, when known.",
+                  "type": "string"
+                }
+              },
               "GC-Session-State": {
                 "description": "Session state at the time streaming began (e.g. active, closed).",
                 "schema": {

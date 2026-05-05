@@ -110,6 +110,10 @@ dolt      123 user  cwd    DIR   1,4       96  42 /tmp/my city/.beads/dolt
 }
 
 func TestDeletedDataInodeTargetsFromLsofParsesNameRecords(t *testing.T) {
+	oldTimeout := lsofCommandTimeout
+	lsofCommandTimeout = 10 * time.Second
+	t.Cleanup(func() { lsofCommandTimeout = oldTimeout })
+
 	binDir := t.TempDir()
 	lsofPath := filepath.Join(binDir, "lsof")
 	if err := os.WriteFile(lsofPath, []byte("#!/bin/sh\nprintf 'p123\\nn/private/var/folders/example/.beads/dolt/held.db (deleted)\\nn/private/var/folders/example/.beads/dolt/hq/.dolt/noms/LOCK (deleted)\\n'\n"), 0o755); err != nil {

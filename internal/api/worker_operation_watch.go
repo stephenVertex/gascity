@@ -93,7 +93,7 @@ func (s *Server) watchWorkerOperationSignals(ctx context.Context, subjects ...st
 }
 
 func workerOperationEventMatchesSubjects(subjects map[string]struct{}, event events.Event) bool {
-	if event.Type != events.WorkerOperation {
+	if event.Type != events.WorkerOperation && event.Type != events.SessionUpdated {
 		return false
 	}
 	subject := strings.TrimSpace(event.Subject)

@@ -45,6 +45,7 @@ var (
 	providerProbePathEnv        = "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
 	providerProbeGOOS           = runtime.GOOS
 	providerProbeCommandContext = exec.CommandContext
+	providerProbeCommandTimeout = 5 * time.Second
 	providerProbeCache          = newCachedProviderProbeStore()
 
 	defaultProviderReadinessItems = []string{"claude", "codex", "gemini"}
@@ -333,7 +334,16 @@ func probeClaude(ctx context.Context, homeDir string) providerProbeResult {
 		return providerProbeResult{status: probeStatusNotInstalled, detail: "claude executable not found in probe PATH"}
 	}
 
-	stdout, _, err := runProbeCommandWithEnv(ctx, homeDir, 5*time.Second, claudeProbeCommandEnv(), path, "auth", "status", "--json")
+	stdout, _, err := runProbeCommandWithEnv(
+		ctx,
+		homeDir,
+		providerProbeCommandTimeout,
+		claudeProbeCommandEnv(),
+		path,
+		"auth",
+		"status",
+		"--json",
+	)
 	if err != nil && strings.TrimSpace(stdout) == "" {
 		return providerProbeResult{status: probeStatusProbeError, detail: "claude auth status failed before returning JSON"}
 	}
@@ -493,7 +503,7 @@ func probeGitHubCLIAuthStatus(ctx context.Context, homeDir, ghPath string) provi
 	stdout, stderr, err := runProbeCommandWithEnv(
 		ctx,
 		homeDir,
-		5*time.Second,
+		providerProbeCommandTimeout,
 		gitHubCLIProbeCommandEnv(),
 		ghPath,
 		"auth",

@@ -259,6 +259,7 @@ func (sm *SupervisorMux) registerCityRoutes() {
 	cityGet(sm, "/session/{id}/transcript", (*Server).humaHandleSessionTranscript)
 	cityGet(sm, "/session/{id}/pending", (*Server).humaHandleSessionPending)
 	cityPatch(sm, "/session/{id}", (*Server).humaHandleSessionPatch)
+	cityPost(sm, "/session/{id}/permission-mode", (*Server).humaHandleSessionPermissionMode)
 	cityRegister(sm, huma.Operation{
 		OperationID:   "submit-session",
 		Method:        http.MethodPost,
@@ -299,7 +300,7 @@ func (sm *SupervisorMux) registerCityRoutes() {
 			"Streams turns (conversation format) or raw messages (JSONL format) " +
 			"based on the format query parameter. Emits activity and pending events " +
 			"for tool approval prompts.",
-		Responses: sseResponseHeaders("GC-Session-State", "GC-Session-Status"),
+		Responses: sseResponseHeaders("GC-Session-State", "GC-Session-Status", "GC-Session-Permission-Mode", "GC-Session-Mode-Version"),
 	}, sessionStreamEventMap(),
 		sseCityPrecheck(sm, (*Server).checkSessionStream),
 		sseCityStream(sm, (*Server).streamSession))

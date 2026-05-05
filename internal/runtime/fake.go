@@ -14,27 +14,32 @@ import (
 // When broken is true (via [NewFailFake]), all mutating operations return
 // an error and IsRunning always returns false. Calls are still recorded.
 type Fake struct {
-	mu                      sync.Mutex
-	sessions                map[string]Config            // live sessions
-	meta                    map[string]map[string]string // session → key → value
-	Calls                   []Call                       // recorded calls in order
-	broken                  bool                         // when true, all ops fail
-	Zombies                 map[string]bool              // sessions with dead agent processes
-	Attached                map[string]bool              // sessions with attached terminals
-	AttachedSequence        map[string][]bool            // scripted IsAttached results by session
-	PeekOutput              map[string]string            // session → canned peek output
-	Activity                map[string]time.Time         // session → last activity time
-	StartErrors             map[string]error             // per-session Start errors for testing
-	StopErrors              map[string]error             // per-session Stop errors for testing
-	StopLeavesRunning       map[string]bool              // per-session Stop returns nil without deleting the session
-	PendingInteractions     map[string]*PendingInteraction
-	Responses               map[string][]InteractionResponse
-	SleepCapabilityValue    SessionSleepCapability
-	WaitForIdleErrors       map[string]error
-	WaitForIdleSequence     map[string][]error
-	DialogErrors            map[string]error
-	ResetTurnErrors         map[string]error
-	InterruptBoundaryErrors map[string]error
+	mu                       sync.Mutex
+	sessions                 map[string]Config            // live sessions
+	meta                     map[string]map[string]string // session → key → value
+	Calls                    []Call                       // recorded calls in order
+	broken                   bool                         // when true, all ops fail
+	Zombies                  map[string]bool              // sessions with dead agent processes
+	Attached                 map[string]bool              // sessions with attached terminals
+	AttachedSequence         map[string][]bool            // scripted IsAttached results by session
+	PeekOutput               map[string]string            // session → canned peek output
+	Activity                 map[string]time.Time         // session → last activity time
+	StartErrors              map[string]error             // per-session Start errors for testing
+	StopErrors               map[string]error             // per-session Stop errors for testing
+	StopLeavesRunning        map[string]bool              // per-session Stop returns nil without deleting the session
+	PendingInteractions      map[string]*PendingInteraction
+	Responses                map[string][]InteractionResponse
+	SleepCapabilityValue     SessionSleepCapability
+	WaitForIdleErrors        map[string]error
+	WaitForIdleSequence      map[string][]error
+	DialogErrors             map[string]error
+	ResetTurnErrors          map[string]error
+	InterruptBoundaryErrors  map[string]error
+	PermissionModes          map[string]PermissionMode
+	PermissionModeVersions   map[string]uint64
+	PermissionModeCaps       map[string]PermissionModeCapability
+	PermissionModeReadErrors map[string]error
+	PermissionModeSetErrors  map[string]error
 	// WaitForIdleGates blocks WaitForIdle on a per-name channel until the
 	// caller closes it. A nil or absent entry returns the configured
 	// WaitForIdleErrors value immediately. The gate is read under f.mu
@@ -65,24 +70,29 @@ type Call struct {
 // NewFake returns a ready-to-use [Fake].
 func NewFake() *Fake {
 	return &Fake{
-		sessions:                make(map[string]Config),
-		meta:                    make(map[string]map[string]string),
-		Zombies:                 make(map[string]bool),
-		Attached:                make(map[string]bool),
-		AttachedSequence:        make(map[string][]bool),
-		StartErrors:             make(map[string]error),
-		StopErrors:              make(map[string]error),
-		StopLeavesRunning:       make(map[string]bool),
-		PendingInteractions:     make(map[string]*PendingInteraction),
-		Responses:               make(map[string][]InteractionResponse),
-		SleepCapabilityValue:    SessionSleepCapabilityFull,
-		WaitForIdleErrors:       make(map[string]error),
-		WaitForIdleSequence:     make(map[string][]error),
-		DialogErrors:            make(map[string]error),
-		ResetTurnErrors:         make(map[string]error),
-		InterruptBoundaryErrors: make(map[string]error),
-		WaitForIdleGates:        make(map[string]chan struct{}),
-		WaitForIdleStarted:      make(map[string]chan struct{}),
+		sessions:                 make(map[string]Config),
+		meta:                     make(map[string]map[string]string),
+		Zombies:                  make(map[string]bool),
+		Attached:                 make(map[string]bool),
+		AttachedSequence:         make(map[string][]bool),
+		StartErrors:              make(map[string]error),
+		StopErrors:               make(map[string]error),
+		StopLeavesRunning:        make(map[string]bool),
+		PendingInteractions:      make(map[string]*PendingInteraction),
+		Responses:                make(map[string][]InteractionResponse),
+		SleepCapabilityValue:     SessionSleepCapabilityFull,
+		WaitForIdleErrors:        make(map[string]error),
+		WaitForIdleSequence:      make(map[string][]error),
+		DialogErrors:             make(map[string]error),
+		ResetTurnErrors:          make(map[string]error),
+		InterruptBoundaryErrors:  make(map[string]error),
+		PermissionModes:          make(map[string]PermissionMode),
+		PermissionModeVersions:   make(map[string]uint64),
+		PermissionModeCaps:       make(map[string]PermissionModeCapability),
+		PermissionModeReadErrors: make(map[string]error),
+		PermissionModeSetErrors:  make(map[string]error),
+		WaitForIdleGates:         make(map[string]chan struct{}),
+		WaitForIdleStarted:       make(map[string]chan struct{}),
 	}
 }
 
@@ -91,24 +101,29 @@ func NewFake() *Fake {
 // session-dependent commands.
 func NewFailFake() *Fake {
 	return &Fake{
-		sessions:                make(map[string]Config),
-		meta:                    make(map[string]map[string]string),
-		Zombies:                 make(map[string]bool),
-		Attached:                make(map[string]bool),
-		StartErrors:             make(map[string]error),
-		StopErrors:              make(map[string]error),
-		StopLeavesRunning:       make(map[string]bool),
-		PendingInteractions:     make(map[string]*PendingInteraction),
-		Responses:               make(map[string][]InteractionResponse),
-		SleepCapabilityValue:    SessionSleepCapabilityFull,
-		WaitForIdleErrors:       make(map[string]error),
-		WaitForIdleSequence:     make(map[string][]error),
-		DialogErrors:            make(map[string]error),
-		ResetTurnErrors:         make(map[string]error),
-		InterruptBoundaryErrors: make(map[string]error),
-		WaitForIdleGates:        make(map[string]chan struct{}),
-		WaitForIdleStarted:      make(map[string]chan struct{}),
-		broken:                  true,
+		sessions:                 make(map[string]Config),
+		meta:                     make(map[string]map[string]string),
+		Zombies:                  make(map[string]bool),
+		Attached:                 make(map[string]bool),
+		StartErrors:              make(map[string]error),
+		StopErrors:               make(map[string]error),
+		StopLeavesRunning:        make(map[string]bool),
+		PendingInteractions:      make(map[string]*PendingInteraction),
+		Responses:                make(map[string][]InteractionResponse),
+		SleepCapabilityValue:     SessionSleepCapabilityFull,
+		WaitForIdleErrors:        make(map[string]error),
+		WaitForIdleSequence:      make(map[string][]error),
+		DialogErrors:             make(map[string]error),
+		ResetTurnErrors:          make(map[string]error),
+		InterruptBoundaryErrors:  make(map[string]error),
+		PermissionModes:          make(map[string]PermissionMode),
+		PermissionModeVersions:   make(map[string]uint64),
+		PermissionModeCaps:       make(map[string]PermissionModeCapability),
+		PermissionModeReadErrors: make(map[string]error),
+		PermissionModeSetErrors:  make(map[string]error),
+		WaitForIdleGates:         make(map[string]chan struct{}),
+		WaitForIdleStarted:       make(map[string]chan struct{}),
+		broken:                   true,
 	}
 }
 
@@ -496,6 +511,130 @@ func (f *Fake) GetLastActivity(name string) (time.Time, error) {
 	return f.Activity[name], nil
 }
 
+// SetPermissionModeState configures the fake permission mode state for a
+// session and marks read and live-switch capability as supported.
+func (f *Fake) SetPermissionModeState(name string, state PermissionModeState) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.PermissionModes == nil {
+		f.PermissionModes = make(map[string]PermissionMode)
+	}
+	if f.PermissionModeVersions == nil {
+		f.PermissionModeVersions = make(map[string]uint64)
+	}
+	if f.PermissionModeCaps == nil {
+		f.PermissionModeCaps = make(map[string]PermissionModeCapability)
+	}
+	f.PermissionModes[name] = state.Mode
+	f.PermissionModeVersions[name] = state.Version
+	f.PermissionModeCaps[name] = PermissionModeCapability{
+		Supported:  true,
+		Readable:   true,
+		LiveSwitch: true,
+		Values:     CanonicalPermissionModes(),
+	}
+}
+
+// SetPermissionModeCapability configures fake permission mode capability for a
+// session without changing its current mode.
+func (f *Fake) SetPermissionModeCapability(name string, capability PermissionModeCapability) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.PermissionModeCaps == nil {
+		f.PermissionModeCaps = make(map[string]PermissionModeCapability)
+	}
+	f.PermissionModeCaps[name] = capability
+}
+
+// PermissionModeCapability reports the configured fake permission mode
+// capability for a session.
+func (f *Fake) PermissionModeCapability(name, _ string) PermissionModeCapability {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, Call{Method: "PermissionModeCapability", Name: name})
+	if f.broken {
+		return PermissionModeCapability{Reason: "session unavailable"}
+	}
+	if capability, ok := f.PermissionModeCaps[name]; ok {
+		return clonePermissionModeCapability(capability)
+	}
+	if _, ok := f.PermissionModes[name]; ok {
+		return PermissionModeCapability{
+			Supported:  true,
+			Readable:   true,
+			LiveSwitch: true,
+			Values:     CanonicalPermissionModes(),
+		}
+	}
+	return PermissionModeCapability{Reason: "provider does not support runtime permission mode"}
+}
+
+// PermissionMode reports the configured fake permission mode for a session.
+func (f *Fake) PermissionMode(_ context.Context, name, _ string) (PermissionModeState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, Call{Method: "PermissionMode", Name: name})
+	if f.broken {
+		return PermissionModeState{}, fmt.Errorf("session unavailable")
+	}
+	if err, ok := f.PermissionModeReadErrors[name]; ok {
+		return PermissionModeState{}, err
+	}
+	capability, ok := f.PermissionModeCaps[name]
+	if ok && (!capability.Supported || !capability.Readable) {
+		return PermissionModeState{}, ErrPermissionModeUnsupported
+	}
+	mode, ok := f.PermissionModes[name]
+	if !ok {
+		return PermissionModeState{}, ErrPermissionModeUnsupported
+	}
+	return PermissionModeState{
+		Mode:     mode,
+		Version:  f.PermissionModeVersions[name],
+		Verified: true,
+	}, nil
+}
+
+// SetPermissionMode updates the configured fake permission mode for a running
+// session and increments its per-session mode version.
+func (f *Fake) SetPermissionMode(_ context.Context, name, provider string, mode PermissionMode) (PermissionModeState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, Call{Method: "SetPermissionMode", Name: name, Key: provider, Value: string(mode)})
+	if f.broken {
+		return PermissionModeState{}, fmt.Errorf("session unavailable")
+	}
+	if _, exists := f.sessions[name]; !exists {
+		return PermissionModeState{}, ErrSessionNotFound
+	}
+	if err, ok := f.PermissionModeSetErrors[name]; ok {
+		return PermissionModeState{}, err
+	}
+	capability, ok := f.PermissionModeCaps[name]
+	if ok && !capability.Supported {
+		return PermissionModeState{}, ErrPermissionModeUnsupported
+	}
+	if ok && !capability.LiveSwitch {
+		return PermissionModeState{}, ErrPermissionModeSwitchUnsupported
+	}
+	if _, ok := f.PermissionModes[name]; !ok && !capability.Supported {
+		return PermissionModeState{}, ErrPermissionModeUnsupported
+	}
+	if f.PermissionModes == nil {
+		f.PermissionModes = make(map[string]PermissionMode)
+	}
+	if f.PermissionModeVersions == nil {
+		f.PermissionModeVersions = make(map[string]uint64)
+	}
+	f.PermissionModes[name] = mode
+	f.PermissionModeVersions[name]++
+	return PermissionModeState{
+		Mode:     mode,
+		Version:  f.PermissionModeVersions[name],
+		Verified: true,
+	}, nil
+}
+
 // ClearScrollback records the call and returns nil (or error if broken).
 func (f *Fake) ClearScrollback(name string) error {
 	f.mu.Lock()
@@ -505,6 +644,11 @@ func (f *Fake) ClearScrollback(name string) error {
 		return fmt.Errorf("session unavailable")
 	}
 	return nil
+}
+
+func clonePermissionModeCapability(capability PermissionModeCapability) PermissionModeCapability {
+	capability.Values = append([]PermissionMode(nil), capability.Values...)
+	return capability
 }
 
 // WaitForIdle records the call and returns the configured result. When

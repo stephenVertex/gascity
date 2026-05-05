@@ -108,6 +108,54 @@ func (e RequestFailedPayloadOperation) Valid() bool {
 	}
 }
 
+// Defines values for SessionPermissionModeInputBodyPermissionMode.
+const (
+	SessionPermissionModeInputBodyPermissionModeAcceptEdits       SessionPermissionModeInputBodyPermissionMode = "acceptEdits"
+	SessionPermissionModeInputBodyPermissionModeBypassPermissions SessionPermissionModeInputBodyPermissionMode = "bypassPermissions"
+	SessionPermissionModeInputBodyPermissionModeDefault           SessionPermissionModeInputBodyPermissionMode = "default"
+	SessionPermissionModeInputBodyPermissionModePlan              SessionPermissionModeInputBodyPermissionMode = "plan"
+)
+
+// Valid indicates whether the value is a known member of the SessionPermissionModeInputBodyPermissionMode enum.
+func (e SessionPermissionModeInputBodyPermissionMode) Valid() bool {
+	switch e {
+	case SessionPermissionModeInputBodyPermissionModeAcceptEdits:
+		return true
+	case SessionPermissionModeInputBodyPermissionModeBypassPermissions:
+		return true
+	case SessionPermissionModeInputBodyPermissionModeDefault:
+		return true
+	case SessionPermissionModeInputBodyPermissionModePlan:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SessionPermissionModeOutputBodyPermissionMode.
+const (
+	SessionPermissionModeOutputBodyPermissionModeAcceptEdits       SessionPermissionModeOutputBodyPermissionMode = "acceptEdits"
+	SessionPermissionModeOutputBodyPermissionModeBypassPermissions SessionPermissionModeOutputBodyPermissionMode = "bypassPermissions"
+	SessionPermissionModeOutputBodyPermissionModeDefault           SessionPermissionModeOutputBodyPermissionMode = "default"
+	SessionPermissionModeOutputBodyPermissionModePlan              SessionPermissionModeOutputBodyPermissionMode = "plan"
+)
+
+// Valid indicates whether the value is a known member of the SessionPermissionModeOutputBodyPermissionMode enum.
+func (e SessionPermissionModeOutputBodyPermissionMode) Valid() bool {
+	switch e {
+	case SessionPermissionModeOutputBodyPermissionModeAcceptEdits:
+		return true
+	case SessionPermissionModeOutputBodyPermissionModeBypassPermissions:
+		return true
+	case SessionPermissionModeOutputBodyPermissionModeDefault:
+		return true
+	case SessionPermissionModeOutputBodyPermissionModePlan:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SubmitIntent.
 const (
 	Default      SubmitIntent = "default"
@@ -2179,6 +2227,12 @@ type ServiceRestartOutputBody struct {
 type SessionActivityEvent struct {
 	// Activity Session activity state: 'idle' or 'in-turn'.
 	Activity string `json:"activity"`
+
+	// ModeVersion Monotonically increasing permission mode version when known.
+	ModeVersion *int64 `json:"mode_version,omitempty"`
+
+	// PermissionMode Canonical runtime permission mode when known.
+	PermissionMode *string `json:"permission_mode,omitempty"`
 }
 
 // SessionAgentGetResponse defines model for SessionAgentGetResponse.
@@ -2205,6 +2259,11 @@ type SessionBindingRecord struct {
 
 	// Status Lifecycle state of a session binding.
 	Status BindingStatus `json:"Status"`
+}
+
+// SessionCapabilities defines model for SessionCapabilities.
+type SessionCapabilities struct {
+	PermissionMode SessionPermissionModeCapability `json:"permission_mode"`
 }
 
 // SessionCreateBody defines model for SessionCreateBody.
@@ -2281,6 +2340,51 @@ type SessionPendingResponse struct {
 	Supported bool                `json:"supported"`
 }
 
+// SessionPermissionModeCapability defines model for SessionPermissionModeCapability.
+type SessionPermissionModeCapability struct {
+	// LiveSwitch Whether the running session can switch permission mode without restart.
+	LiveSwitch bool `json:"live_switch"`
+
+	// Readable Whether the current runtime permission mode can be read.
+	Readable bool `json:"readable"`
+
+	// Reason Reason permission mode is unavailable or limited.
+	Reason *string `json:"reason,omitempty"`
+
+	// Supported Whether runtime permission mode is supported for this provider/session.
+	Supported bool `json:"supported"`
+
+	// Values Canonical permission mode values accepted by this session.
+	Values *[]string `json:"values,omitempty"`
+}
+
+// SessionPermissionModeInputBody defines model for SessionPermissionModeInputBody.
+type SessionPermissionModeInputBody struct {
+	// PermissionMode Canonical permission mode to apply to the running session.
+	PermissionMode SessionPermissionModeInputBodyPermissionMode `json:"permission_mode"`
+}
+
+// SessionPermissionModeInputBodyPermissionMode Canonical permission mode to apply to the running session.
+type SessionPermissionModeInputBodyPermissionMode string
+
+// SessionPermissionModeOutputBody defines model for SessionPermissionModeOutputBody.
+type SessionPermissionModeOutputBody struct {
+	// Id Session ID.
+	Id string `json:"id"`
+
+	// ModeVersion Monotonically increasing session permission mode version.
+	ModeVersion int64 `json:"mode_version"`
+
+	// PermissionMode Confirmed canonical permission mode.
+	PermissionMode SessionPermissionModeOutputBodyPermissionMode `json:"permission_mode"`
+
+	// Verified Whether the provider verified the mode after applying it.
+	Verified bool `json:"verified"`
+}
+
+// SessionPermissionModeOutputBodyPermissionMode Confirmed canonical permission mode.
+type SessionPermissionModeOutputBodyPermissionMode string
+
 // SessionRawMessageFrame Provider-native transcript frame. Gas City forwards the exact JSON the provider wrote to its session log, so the shape is provider-specific and can be any JSON value. The producing provider is identified by the Provider field on the enclosing envelope; consumers dispatch per-provider frame parsing keyed by that identifier.
 type SessionRawMessageFrame = interface{}
 
@@ -2320,6 +2424,7 @@ type SessionResponse struct {
 	Activity               *string                 `json:"activity,omitempty"`
 	Alias                  *string                 `json:"alias,omitempty"`
 	Attached               bool                    `json:"attached"`
+	Capabilities           SessionCapabilities     `json:"capabilities"`
 	ConfiguredNamedSession *bool                   `json:"configured_named_session,omitempty"`
 	ContextPct             *int64                  `json:"context_pct,omitempty"`
 	ContextWindow          *int64                  `json:"context_window,omitempty"`
@@ -2330,6 +2435,7 @@ type SessionResponse struct {
 	LastActive             *string                 `json:"last_active,omitempty"`
 	LastOutput             *string                 `json:"last_output,omitempty"`
 	Metadata               *map[string]string      `json:"metadata,omitempty"`
+	ModeVersion            *int64                  `json:"mode_version,omitempty"`
 	Model                  *string                 `json:"model,omitempty"`
 	Options                *map[string]string      `json:"options,omitempty"`
 	Pool                   *string                 `json:"pool,omitempty"`
@@ -2351,9 +2457,15 @@ type SessionStreamCommonEvent struct {
 
 // SessionStreamMessageEvent defines model for SessionStreamMessageEvent.
 type SessionStreamMessageEvent struct {
-	Format     string          `json:"format"`
-	Id         string          `json:"id"`
-	Pagination *PaginationInfo `json:"pagination,omitempty"`
+	Format string `json:"format"`
+	Id     string `json:"id"`
+
+	// ModeVersion Monotonically increasing permission mode version when known.
+	ModeVersion *int64          `json:"mode_version,omitempty"`
+	Pagination  *PaginationInfo `json:"pagination,omitempty"`
+
+	// PermissionMode Canonical runtime permission mode when known.
+	PermissionMode *string `json:"permission_mode,omitempty"`
 
 	// Provider Producing provider identifier (claude, codex, gemini, open-code, etc.).
 	Provider string        `json:"provider"`
@@ -2367,8 +2479,14 @@ type SessionStreamRawMessageEvent struct {
 	Id     string `json:"id"`
 
 	// Messages Provider-native transcript frames, emitted verbatim as the provider wrote them.
-	Messages   *[]SessionRawMessageFrame `json:"messages"`
-	Pagination *PaginationInfo           `json:"pagination,omitempty"`
+	Messages *[]SessionRawMessageFrame `json:"messages"`
+
+	// ModeVersion Monotonically increasing permission mode version when known.
+	ModeVersion *int64          `json:"mode_version,omitempty"`
+	Pagination  *PaginationInfo `json:"pagination,omitempty"`
+
+	// PermissionMode Canonical runtime permission mode when known.
+	PermissionMode *string `json:"permission_mode,omitempty"`
 
 	// Provider Producing provider identifier (claude, codex, gemini, open-code, etc.). Consumers use this to dispatch per-provider frame parsing.
 	Provider string `json:"provider"`
@@ -2415,6 +2533,16 @@ type SessionTranscriptGetResponse struct {
 
 	// Turns Populated for conversation/text formats.
 	Turns *[]OutputTurn `json:"turns,omitempty"`
+}
+
+// SessionUpdatedPayload defines model for SessionUpdatedPayload.
+type SessionUpdatedPayload struct {
+	ModeVersion    *int64             `json:"mode_version,omitempty"`
+	Options        *map[string]string `json:"options,omitempty"`
+	PermissionMode *string            `json:"permission_mode,omitempty"`
+	Provider       *string            `json:"provider,omitempty"`
+	SessionId      *string            `json:"session_id,omitempty"`
+	SessionName    *string            `json:"session_name,omitempty"`
 }
 
 // SlingInputBody defines model for SlingInputBody.
@@ -3165,7 +3293,7 @@ type TypedEventStreamEnvelopeSessionUndrained struct {
 type TypedEventStreamEnvelopeSessionUpdated struct {
 	Actor    string                   `json:"actor"`
 	Message  *string                  `json:"message,omitempty"`
-	Payload  NoPayload                `json:"payload"`
+	Payload  SessionUpdatedPayload    `json:"payload"`
 	Seq      int64                    `json:"seq"`
 	Subject  *string                  `json:"subject,omitempty"`
 	Ts       time.Time                `json:"ts"`
@@ -3766,7 +3894,7 @@ type TypedTaggedEventStreamEnvelopeSessionUpdated struct {
 	Actor    string                   `json:"actor"`
 	City     string                   `json:"city"`
 	Message  *string                  `json:"message,omitempty"`
-	Payload  NoPayload                `json:"payload"`
+	Payload  SessionUpdatedPayload    `json:"payload"`
 	Seq      int64                    `json:"seq"`
 	Subject  *string                  `json:"subject,omitempty"`
 	Ts       time.Time                `json:"ts"`
@@ -4696,6 +4824,12 @@ type SendSessionMessageParams struct {
 	XGCRequest string `json:"X-GC-Request"`
 }
 
+// PostV0CityByCityNameSessionByIdPermissionModeParams defines parameters for PostV0CityByCityNameSessionByIdPermissionMode.
+type PostV0CityByCityNameSessionByIdPermissionModeParams struct {
+	// XGCRequest Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+	XGCRequest string `json:"X-GC-Request"`
+}
+
 // PostV0CityByCityNameSessionByIdRenameParams defines parameters for PostV0CityByCityNameSessionByIdRename.
 type PostV0CityByCityNameSessionByIdRenameParams struct {
 	// XGCRequest Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
@@ -4968,6 +5102,9 @@ type PatchV0CityByCityNameSessionByIdJSONRequestBody = SessionPatchBody
 
 // SendSessionMessageJSONRequestBody defines body for SendSessionMessage for application/json ContentType.
 type SendSessionMessageJSONRequestBody = SessionMessageInputBody
+
+// PostV0CityByCityNameSessionByIdPermissionModeJSONRequestBody defines body for PostV0CityByCityNameSessionByIdPermissionMode for application/json ContentType.
+type PostV0CityByCityNameSessionByIdPermissionModeJSONRequestBody = SessionPermissionModeInputBody
 
 // PostV0CityByCityNameSessionByIdRenameJSONRequestBody defines body for PostV0CityByCityNameSessionByIdRename for application/json ContentType.
 type PostV0CityByCityNameSessionByIdRenameJSONRequestBody = SessionRenameInputBody
@@ -5364,6 +5501,32 @@ func (t *EventPayload) FromSessionSubmitSucceededPayload(v SessionSubmitSucceede
 
 // MergeSessionSubmitSucceededPayload performs a merge with any union data inside the EventPayload, using the provided SessionSubmitSucceededPayload
 func (t *EventPayload) MergeSessionSubmitSucceededPayload(v SessionSubmitSucceededPayload) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSessionUpdatedPayload returns the union data inside the EventPayload as a SessionUpdatedPayload
+func (t EventPayload) AsSessionUpdatedPayload() (SessionUpdatedPayload, error) {
+	var body SessionUpdatedPayload
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSessionUpdatedPayload overwrites any union data inside the EventPayload as the provided SessionUpdatedPayload
+func (t *EventPayload) FromSessionUpdatedPayload(v SessionUpdatedPayload) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSessionUpdatedPayload performs a merge with any union data inside the EventPayload, using the provided SessionUpdatedPayload
+func (t *EventPayload) MergeSessionUpdatedPayload(v SessionUpdatedPayload) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -8857,6 +9020,11 @@ type ClientInterface interface {
 	// GetV0CityByCityNameSessionByIdPending request
 	GetV0CityByCityNameSessionByIdPending(ctx context.Context, cityName string, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// PostV0CityByCityNameSessionByIdPermissionModeWithBody request with any body
+	PostV0CityByCityNameSessionByIdPermissionModeWithBody(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdPermissionModeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PostV0CityByCityNameSessionByIdPermissionMode(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdPermissionModeParams, body PostV0CityByCityNameSessionByIdPermissionModeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// PostV0CityByCityNameSessionByIdRenameWithBody request with any body
 	PostV0CityByCityNameSessionByIdRenameWithBody(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdRenameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -10823,6 +10991,30 @@ func (c *Client) SendSessionMessage(ctx context.Context, cityName string, id str
 
 func (c *Client) GetV0CityByCityNameSessionByIdPending(ctx context.Context, cityName string, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetV0CityByCityNameSessionByIdPendingRequest(c.Server, cityName, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostV0CityByCityNameSessionByIdPermissionModeWithBody(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdPermissionModeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostV0CityByCityNameSessionByIdPermissionModeRequestWithBody(c.Server, cityName, id, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostV0CityByCityNameSessionByIdPermissionMode(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdPermissionModeParams, body PostV0CityByCityNameSessionByIdPermissionModeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostV0CityByCityNameSessionByIdPermissionModeRequest(c.Server, cityName, id, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -18827,6 +19019,73 @@ func NewGetV0CityByCityNameSessionByIdPendingRequest(server string, cityName str
 	return req, nil
 }
 
+// NewPostV0CityByCityNameSessionByIdPermissionModeRequest calls the generic PostV0CityByCityNameSessionByIdPermissionMode builder with application/json body
+func NewPostV0CityByCityNameSessionByIdPermissionModeRequest(server string, cityName string, id string, params *PostV0CityByCityNameSessionByIdPermissionModeParams, body PostV0CityByCityNameSessionByIdPermissionModeJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostV0CityByCityNameSessionByIdPermissionModeRequestWithBody(server, cityName, id, params, "application/json", bodyReader)
+}
+
+// NewPostV0CityByCityNameSessionByIdPermissionModeRequestWithBody generates requests for PostV0CityByCityNameSessionByIdPermissionMode with any type of body
+func NewPostV0CityByCityNameSessionByIdPermissionModeRequestWithBody(server string, cityName string, id string, params *PostV0CityByCityNameSessionByIdPermissionModeParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "cityName", cityName, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v0/city/%s/session/%s/permission-mode", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "X-GC-Request", params.XGCRequest, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-GC-Request", headerParam0)
+
+	}
+
+	return req, nil
+}
+
 // NewPostV0CityByCityNameSessionByIdRenameRequest calls the generic PostV0CityByCityNameSessionByIdRename builder with application/json body
 func NewPostV0CityByCityNameSessionByIdRenameRequest(server string, cityName string, id string, params *PostV0CityByCityNameSessionByIdRenameParams, body PostV0CityByCityNameSessionByIdRenameJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -20685,6 +20944,11 @@ type ClientWithResponsesInterface interface {
 
 	// GetV0CityByCityNameSessionByIdPendingWithResponse request
 	GetV0CityByCityNameSessionByIdPendingWithResponse(ctx context.Context, cityName string, id string, reqEditors ...RequestEditorFn) (*GetV0CityByCityNameSessionByIdPendingResponse, error)
+
+	// PostV0CityByCityNameSessionByIdPermissionModeWithBodyWithResponse request with any body
+	PostV0CityByCityNameSessionByIdPermissionModeWithBodyWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdPermissionModeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdPermissionModeResponse, error)
+
+	PostV0CityByCityNameSessionByIdPermissionModeWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdPermissionModeParams, body PostV0CityByCityNameSessionByIdPermissionModeJSONRequestBody, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdPermissionModeResponse, error)
 
 	// PostV0CityByCityNameSessionByIdRenameWithBodyWithResponse request with any body
 	PostV0CityByCityNameSessionByIdRenameWithBodyWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdRenameParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdRenameResponse, error)
@@ -23603,6 +23867,29 @@ func (r GetV0CityByCityNameSessionByIdPendingResponse) StatusCode() int {
 	return 0
 }
 
+type PostV0CityByCityNameSessionByIdPermissionModeResponse struct {
+	Body                          []byte
+	HTTPResponse                  *http.Response
+	JSON200                       *SessionPermissionModeOutputBody
+	ApplicationproblemJSONDefault *ErrorModel
+}
+
+// Status returns HTTPResponse.Status
+func (r PostV0CityByCityNameSessionByIdPermissionModeResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostV0CityByCityNameSessionByIdPermissionModeResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type PostV0CityByCityNameSessionByIdRenameResponse struct {
 	Body                          []byte
 	HTTPResponse                  *http.Response
@@ -25432,6 +25719,23 @@ func (c *ClientWithResponses) GetV0CityByCityNameSessionByIdPendingWithResponse(
 		return nil, err
 	}
 	return ParseGetV0CityByCityNameSessionByIdPendingResponse(rsp)
+}
+
+// PostV0CityByCityNameSessionByIdPermissionModeWithBodyWithResponse request with arbitrary body returning *PostV0CityByCityNameSessionByIdPermissionModeResponse
+func (c *ClientWithResponses) PostV0CityByCityNameSessionByIdPermissionModeWithBodyWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdPermissionModeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdPermissionModeResponse, error) {
+	rsp, err := c.PostV0CityByCityNameSessionByIdPermissionModeWithBody(ctx, cityName, id, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostV0CityByCityNameSessionByIdPermissionModeResponse(rsp)
+}
+
+func (c *ClientWithResponses) PostV0CityByCityNameSessionByIdPermissionModeWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdPermissionModeParams, body PostV0CityByCityNameSessionByIdPermissionModeJSONRequestBody, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdPermissionModeResponse, error) {
+	rsp, err := c.PostV0CityByCityNameSessionByIdPermissionMode(ctx, cityName, id, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostV0CityByCityNameSessionByIdPermissionModeResponse(rsp)
 }
 
 // PostV0CityByCityNameSessionByIdRenameWithBodyWithResponse request with arbitrary body returning *PostV0CityByCityNameSessionByIdRenameResponse
@@ -29699,6 +30003,39 @@ func ParseGetV0CityByCityNameSessionByIdPendingResponse(rsp *http.Response) (*Ge
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest SessionPendingResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostV0CityByCityNameSessionByIdPermissionModeResponse parses an HTTP response from a PostV0CityByCityNameSessionByIdPermissionModeWithResponse call
+func ParsePostV0CityByCityNameSessionByIdPermissionModeResponse(rsp *http.Response) (*PostV0CityByCityNameSessionByIdPermissionModeResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostV0CityByCityNameSessionByIdPermissionModeResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SessionPermissionModeOutputBody
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}

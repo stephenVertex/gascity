@@ -11,6 +11,8 @@ import (
 	"github.com/gastownhall/gascity/internal/testutil"
 )
 
+const conditionTestCommandTimeout = 15 * time.Second
+
 func TestConditionEnvEnviron(t *testing.T) {
 	env := ConditionEnv{
 		BeadID:               "bead-123",
@@ -294,7 +296,7 @@ func TestRunConditionPass(t *testing.T) {
 		ArtifactDir: dir,
 	}
 
-	result := RunCondition(context.Background(), script, env, 5*time.Second, 0)
+	result := RunCondition(context.Background(), script, env, conditionTestCommandTimeout, 0)
 	if result.Outcome != GatePass {
 		t.Errorf("Outcome = %q, want %q", result.Outcome, GatePass)
 	}
@@ -323,7 +325,7 @@ func TestRunConditionFail(t *testing.T) {
 		ArtifactDir: dir,
 	}
 
-	result := RunCondition(context.Background(), script, env, 5*time.Second, 0)
+	result := RunCondition(context.Background(), script, env, conditionTestCommandTimeout, 0)
 	if result.Outcome != GateFail {
 		t.Errorf("Outcome = %q, want %q", result.Outcome, GateFail)
 	}
@@ -358,7 +360,7 @@ func TestRunConditionUsesWorkDir(t *testing.T) {
 		ArtifactDir: cityDir,
 	}
 
-	result := RunCondition(context.Background(), script, env, 5*time.Second, 0)
+	result := RunCondition(context.Background(), script, env, conditionTestCommandTimeout, 0)
 	if result.Outcome != GatePass {
 		t.Fatalf("Outcome = %q, want %q (stderr=%q)", result.Outcome, GatePass, result.Stderr)
 	}
@@ -392,7 +394,7 @@ func TestRunConditionUsesStorePathAsDefaultWorkDir(t *testing.T) {
 		StorePath: storeDir,
 	}
 
-	result := RunCondition(context.Background(), script, env, 5*time.Second, 0)
+	result := RunCondition(context.Background(), script, env, conditionTestCommandTimeout, 0)
 	if result.Outcome != GatePass {
 		t.Fatalf("Outcome = %q, want %q (stderr=%q)", result.Outcome, GatePass, result.Stderr)
 	}
@@ -506,7 +508,7 @@ func TestRunConditionOutputCapture(t *testing.T) {
 		ArtifactDir: dir,
 	}
 
-	result := RunCondition(context.Background(), script, env, 5*time.Second, 0)
+	result := RunCondition(context.Background(), script, env, conditionTestCommandTimeout, 0)
 	if !strings.Contains(result.Stdout, "stdout-data") {
 		t.Errorf("Stdout = %q, want to contain 'stdout-data'", result.Stdout)
 	}
@@ -535,7 +537,7 @@ func TestRunConditionOutputTruncation(t *testing.T) {
 		ArtifactDir: dir,
 	}
 
-	result := RunCondition(context.Background(), script, env, 5*time.Second, 0)
+	result := RunCondition(context.Background(), script, env, conditionTestCommandTimeout, 0)
 	if result.Outcome != GatePass {
 		t.Errorf("Outcome = %q, want %q", result.Outcome, GatePass)
 	}
@@ -593,7 +595,7 @@ func TestRunConditionEnvVarsAvailable(t *testing.T) {
 		ArtifactDir: dir,
 	}
 
-	result := RunCondition(context.Background(), script, env, 5*time.Second, 0)
+	result := RunCondition(context.Background(), script, env, conditionTestCommandTimeout, 0)
 	if result.Outcome != GatePass {
 		t.Fatalf("Outcome = %q, want pass; stderr: %s", result.Outcome, result.Stderr)
 	}

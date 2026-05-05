@@ -8,8 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -4398,7 +4400,7 @@ func TestOrderDispatcherCancelTerminatesInFlight(t *testing.T) {
 	store := beads.NewMemStore()
 	execStarted := make(chan struct{})
 
-	// Exec respects ctx — returns when canceled. This mirrors what
+	// Exec respects ctx and returns when canceled. This mirrors what
 	// exec.CommandContext does in production: SIGKILL on ctx.Done.
 	fakeExec := func(ctx context.Context, _, _ string, _ []string) ([]byte, error) {
 		close(execStarted)
@@ -4422,7 +4424,7 @@ func TestOrderDispatcherCancelTerminatesInFlight(t *testing.T) {
 	}
 
 	// Use Background so the only ctx that can cancel the dispatchOne is
-	// the one cancel() controls — proves the hookup works.
+	// the one cancel() controls.
 	ad.dispatch(context.Background(), t.TempDir(), time.Now())
 	<-execStarted
 
@@ -4489,4 +4491,55 @@ func TestLockedStderrWrapsNonNil(t *testing.T) {
 	if _, ok := w.(*lockedWriter); !ok {
 		t.Fatalf("lockedStderr(non-nil): got %T, want *lockedWriter", w)
 	}
+}
+
+func TestShellExecRunnerContextKillsDescendantProcesses(t *testing.T) {
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "child.pid")
+	command := fmt.Sprintf("(trap '' HUP TERM; sleep 30) & echo $! > %q; wait", pidPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := shellExecRunner(ctx, command, dir, nil); err == nil {
+		t.Fatal("shellExecRunner: expected context timeout error")
+	}
+
+	pid := readPIDFile(t, pidPath)
+	t.Cleanup(func() {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for processAlive(pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("child process %d survived context cancellation", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func readPIDFile(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+			if parseErr != nil {
+				t.Fatalf("parse child pid %q: %v", string(data), parseErr)
+			}
+			return pid
+		}
+		if !os.IsNotExist(err) {
+			t.Fatalf("read child pid: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child pid file %s was not written", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func processAlive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
 }

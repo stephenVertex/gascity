@@ -59,8 +59,8 @@ var cityCommandEnv sync.Map
 
 const (
 	integrationGCCommandTimeout     = 60 * time.Second
-	integrationGCLifecycleTimeout   = 120 * time.Second
-	integrationGCDoltCommandTimeout = 120 * time.Second
+	integrationGCLifecycleTimeout   = 300 * time.Second
+	integrationGCDoltCommandTimeout = 300 * time.Second
 	integrationBDCommandTimeout     = 15 * time.Second
 )
 

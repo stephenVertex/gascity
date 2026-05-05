@@ -293,15 +293,18 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstPar
 	t.Setenv("HOME", homeDir)
 	originalPathEnv := providerProbePathEnv
 	originalCommandContext := providerProbeCommandContext
+	originalCommandTimeout := providerProbeCommandTimeout
 	originalCache := providerProbeCache
 	originalCacheTTL := providerProbeCacheTTL
 	providerProbePathEnv = binDir
 	providerProbeCommandContext = exec.CommandContext
+	providerProbeCommandTimeout = 15 * time.Second
 	providerProbeCache = newCachedProviderProbeStore()
 	providerProbeCacheTTL = time.Hour
 	defer func() {
 		providerProbePathEnv = originalPathEnv
 		providerProbeCommandContext = originalCommandContext
+		providerProbeCommandTimeout = originalCommandTimeout
 		providerProbeCache = originalCache
 		providerProbeCacheTTL = originalCacheTTL
 	}()
@@ -387,11 +390,14 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstPar
 	t.Setenv("HOME", homeDir)
 	originalPathEnv := providerProbePathEnv
 	originalCommandContext := providerProbeCommandContext
+	originalCommandTimeout := providerProbeCommandTimeout
 	providerProbePathEnv = binDir
 	providerProbeCommandContext = exec.CommandContext
+	providerProbeCommandTimeout = 15 * time.Second
 	defer func() {
 		providerProbePathEnv = originalPathEnv
 		providerProbeCommandContext = originalCommandContext
+		providerProbeCommandTimeout = originalCommandTimeout
 	}()
 
 	state := newFakeState(t)

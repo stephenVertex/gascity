@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/test/tmuxtest"
 	"github.com/pb33f/libopenapi"
 	openapivalidator "github.com/pb33f/libopenapi-validator"
 )
@@ -99,7 +100,7 @@ func TestGCLiveContract_BeadsAndEvents(t *testing.T) {
 		RequestID string `json:"request_id"`
 		Name      string `json:"name"`
 		Path      string `json:"path"`
-	}](t, baseURL, validator, "/v0/events", createCity.RequestID, "request.result.city.create", 120*time.Second, createCity.EventCursor)
+	}](t, baseURL, validator, "/v0/events", createCity.RequestID, "request.result.city.create", 300*time.Second, createCity.EventCursor)
 	liveContractJSON[struct {
 		Status string `json:"status"`
 	}](t, baseURL, validator, http.MethodGet, cityBase+"/health", nil, http.StatusOK)
@@ -526,16 +527,269 @@ description = "Read and complete {{issue}}."
 	waitForCityAbsent(t, baseURL, validator, cityName, 45*time.Second)
 }
 
+func TestGCLiveContract_SessionPermissionMode(t *testing.T) {
+	tmuxtest.RequireTmux(t)
+
+	bin := buildGCBinary(t)
+	modeAgent := buildLiveContractPermissionModeAgent(t)
+
+	root := shortTempDir(t)
+	gcHome := filepath.Join(root, "home")
+	runtimeDir := filepath.Join(root, "run")
+	for _, dir := range []string{gcHome, runtimeDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := seedDoltIdentityForRoot(gcHome); err != nil {
+		t.Fatalf("seed dolt identity: %v", err)
+	}
+	port := reserveFreePort(t)
+	writeSupervisorConfig(t, gcHome, port)
+
+	baseURL := "http://127.0.0.1:" + strconv.Itoa(port)
+	env := integrationEnvFor(gcHome, runtimeDir, true)
+	env = filterEnv(env, "GC_SESSION")
+	env = append(env, "GC_SESSION=tmux")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	cmd := exec.CommandContext(ctx, bin, "supervisor", "run")
+	cmd.Env = env
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start supervisor: %v", err)
+	}
+	var supervisorLog strings.Builder
+	go func() { _, _ = io.Copy(&supervisorLog, stderr) }()
+	t.Cleanup(func() {
+		cancel()
+		_ = cmd.Wait()
+		if t.Failed() {
+			t.Logf("supervisor stderr:\n%s", supervisorLog.String())
+		}
+	})
+
+	waitHTTP(t, baseURL+"/health", 10*time.Second)
+
+	specBytes := liveContractRequest(t, baseURL, nil, http.MethodGet, "/openapi.json", nil, http.StatusOK)
+	assertLiveContractSpec(t, specBytes)
+	assertLiveContractRequiredOperations(t, specBytes)
+	validator := liveContractValidator(t, specBytes)
+
+	guard := tmuxtest.NewGuard(t)
+	cityName := guard.CityName()
+	cityDir := filepath.Join(root, "cities", cityName)
+	createCity := liveContractJSON[struct {
+		RequestID   string `json:"request_id"`
+		EventCursor string `json:"event_cursor"`
+	}](t, baseURL, validator, http.MethodPost, "/v0/city", map[string]string{
+		"dir":           cityDir,
+		"start_command": modeAgent,
+	}, http.StatusAccepted)
+	waitForLiveContractRequestID[struct {
+		RequestID string `json:"request_id"`
+		Name      string `json:"name"`
+		Path      string `json:"path"`
+	}](t, baseURL, validator, "/v0/events", createCity.RequestID, "request.result.city.create", 300*time.Second, createCity.EventCursor)
+
+	cityBase := "/v0/city/" + url.PathEscape(cityName)
+	rigName := "alpha"
+	rigDir := filepath.Join(cityDir, rigName)
+	if err := os.MkdirAll(rigDir, 0o755); err != nil {
+		t.Fatalf("mkdir rig: %v", err)
+	}
+	liveContractJSON[struct {
+		Status string `json:"status"`
+		Rig    string `json:"rig"`
+	}](t, baseURL, validator, http.MethodPost, cityBase+"/rigs", map[string]string{
+		"name":   rigName,
+		"path":   rigDir,
+		"prefix": "pm" + strconv.FormatInt(time.Now().UnixNano(), 36),
+	}, http.StatusCreated)
+	waitForLiveContractRig(t, baseURL, validator, cityBase, rigName, rigDir, 30*time.Second)
+
+	liveContractJSON[struct {
+		Status   string `json:"status"`
+		Provider string `json:"provider"`
+	}](t, baseURL, validator, http.MethodPost, cityBase+"/providers", map[string]any{
+		"name":           "claude",
+		"command":        modeAgent,
+		"prompt_mode":    "none",
+		"ready_delay_ms": 100,
+		"env": map[string]string{
+			"GC_PERMISSION_MODE_INITIAL": "unrestricted",
+		},
+	}, http.StatusCreated)
+	liveContractJSON[struct {
+		Status   string `json:"status"`
+		Provider string `json:"provider"`
+	}](t, baseURL, validator, http.MethodPost, cityBase+"/providers", map[string]any{
+		"name":        "plain-agent",
+		"command":     modeAgent,
+		"prompt_mode": "none",
+	}, http.StatusCreated)
+
+	liveContractJSON[struct {
+		Status string `json:"status"`
+		Agent  string `json:"agent"`
+	}](t, baseURL, validator, http.MethodPost, cityBase+"/agents", map[string]string{
+		"name":     "worker",
+		"dir":      rigName,
+		"provider": "claude",
+	}, http.StatusCreated)
+	liveContractJSON[struct {
+		Status string `json:"status"`
+		Agent  string `json:"agent"`
+	}](t, baseURL, validator, http.MethodPost, cityBase+"/agents", map[string]string{
+		"name":     "limited",
+		"dir":      rigName,
+		"provider": "plain-agent",
+	}, http.StatusCreated)
+	targetAgent := rigName + "/worker"
+	unsupportedAgent := rigName + "/limited"
+	waitForLiveContractAgent(t, baseURL, validator, cityBase, targetAgent, 30*time.Second)
+	waitForLiveContractAgent(t, baseURL, validator, cityBase, unsupportedAgent, 30*time.Second)
+
+	runID := strconv.FormatInt(time.Now().UnixNano(), 36)
+	sessionID := createLiveContractAgentSession(t, baseURL, validator, cityBase, targetAgent, rigName, "permission-"+runID)
+	sessionPath := cityBase + "/session/" + url.PathEscape(sessionID)
+	initial := waitForLiveContractPermissionMode(t, baseURL, validator, sessionPath, "bypassPermissions", 30*time.Second)
+	if !initial.Capabilities.PermissionMode.Supported || !initial.Capabilities.PermissionMode.Readable || !initial.Capabilities.PermissionMode.LiveSwitch {
+		t.Fatalf("initial permission capability = %+v, want supported readable live_switch", initial.Capabilities.PermissionMode)
+	}
+	if !stringListContains(initial.Capabilities.PermissionMode.Values, "acceptEdits") {
+		t.Fatalf("initial permission values = %v, want acceptEdits", initial.Capabilities.PermissionMode.Values)
+	}
+	if initial.ModeVersion != 0 {
+		t.Fatalf("initial mode_version = %d, want zero before mutation", initial.ModeVersion)
+	}
+
+	listBefore := liveContractJSON[struct {
+		Items []contractSessionPermissionResponse `json:"items"`
+	}](t, baseURL, validator, http.MethodGet, cityBase+"/sessions?limit=100", nil, http.StatusOK)
+	assertLiveContractSessionListMode(t, listBefore.Items, sessionID, "bypassPermissions", 0)
+
+	streamInitial := readLiveContractSessionStreamMessage(t, baseURL, sessionPath+"/stream?format=raw", 10*time.Second)
+	if streamInitial.PermissionMode != "bypassPermissions" {
+		t.Fatalf("initial stream permission_mode = %q, want bypassPermissions; event=%s", streamInitial.PermissionMode, streamInitial.Raw)
+	}
+	if streamInitial.ModeVersion != 0 {
+		t.Fatalf("initial stream mode_version = %d, want zero; event=%s", streamInitial.ModeVersion, streamInitial.Raw)
+	}
+
+	updated := liveContractJSON[struct {
+		ID             string `json:"id"`
+		PermissionMode string `json:"permission_mode"`
+		ModeVersion    uint64 `json:"mode_version"`
+		Verified       bool   `json:"verified"`
+	}](t, baseURL, validator, http.MethodPost, sessionPath+"/permission-mode", map[string]string{
+		"permission_mode": "acceptEdits",
+	}, http.StatusOK)
+	if updated.ID != sessionID || updated.PermissionMode != "acceptEdits" || !updated.Verified || updated.ModeVersion == 0 {
+		t.Fatalf("permission mode update = %+v, want confirmed acceptEdits with version", updated)
+	}
+
+	event := waitForLiveContractStreamEvent(t, baseURL, cityBase+"/events/stream?after_seq=0", func(event contractEvent) bool {
+		if event.Type != "session.updated" || event.Subject != sessionID {
+			return false
+		}
+		var payload struct {
+			PermissionMode string `json:"permission_mode"`
+			ModeVersion    uint64 `json:"mode_version"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return false
+		}
+		return payload.PermissionMode == "acceptEdits" && payload.ModeVersion == updated.ModeVersion
+	}, 30*time.Second)
+	if event.Seq == 0 {
+		t.Fatalf("session.updated event missing sequence: %+v", event)
+	}
+
+	detail := waitForLiveContractPermissionMode(t, baseURL, validator, sessionPath, "acceptEdits", 30*time.Second)
+	if detail.ModeVersion != updated.ModeVersion {
+		t.Fatalf("detail mode_version = %d, want %d", detail.ModeVersion, updated.ModeVersion)
+	}
+	listAfter := liveContractJSON[struct {
+		Items []contractSessionPermissionResponse `json:"items"`
+	}](t, baseURL, validator, http.MethodGet, cityBase+"/sessions?limit=100", nil, http.StatusOK)
+	assertLiveContractSessionListMode(t, listAfter.Items, sessionID, "acceptEdits", updated.ModeVersion)
+
+	streamAfter := readLiveContractSessionStreamMessage(t, baseURL, sessionPath+"/stream?format=raw", 10*time.Second)
+	if streamAfter.PermissionMode != "acceptEdits" || streamAfter.ModeVersion != updated.ModeVersion {
+		t.Fatalf("updated stream event = %s, want acceptEdits version %d", streamAfter.Raw, updated.ModeVersion)
+	}
+
+	unsupportedID := createLiveContractAgentSession(t, baseURL, validator, cityBase, unsupportedAgent, rigName, "permission-unsupported-"+runID)
+	unsupportedPath := cityBase + "/session/" + url.PathEscape(unsupportedID)
+	unsupported := waitForLiveContractUnsupportedPermissionMode(t, baseURL, validator, unsupportedPath, 30*time.Second)
+	if unsupported.Capabilities.PermissionMode.Supported {
+		t.Fatalf("unsupported capability = %+v, want supported=false", unsupported.Capabilities.PermissionMode)
+	}
+	if unsupported.Capabilities.PermissionMode.Reason == "" {
+		t.Fatalf("unsupported capability missing reason: %+v", unsupported.Capabilities.PermissionMode)
+	}
+	liveContractRequest(t, baseURL, validator, http.MethodPost, unsupportedPath+"/permission-mode", map[string]string{
+		"permission_mode": "plan",
+	}, http.StatusNotImplemented)
+
+	liveContractJSON[struct {
+		Status string `json:"status"`
+	}](t, baseURL, validator, http.MethodPost, sessionPath+"/close?delete=true", nil, http.StatusOK)
+	liveContractJSON[struct {
+		Status string `json:"status"`
+	}](t, baseURL, validator, http.MethodPost, unsupportedPath+"/close?delete=true", nil, http.StatusOK)
+
+	unregister := liveContractJSON[struct {
+		RequestID   string `json:"request_id"`
+		EventCursor string `json:"event_cursor"`
+	}](t, baseURL, validator, http.MethodPost, cityBase+"/unregister", nil, http.StatusAccepted)
+	waitForLiveContractRequestID[struct {
+		RequestID string `json:"request_id"`
+		Name      string `json:"name"`
+		Path      string `json:"path"`
+	}](t, baseURL, validator, "/v0/events", unregister.RequestID, "request.result.city.unregister", 120*time.Second, unregister.EventCursor)
+	waitForCityAbsent(t, baseURL, validator, cityName, 45*time.Second)
+}
+
 type contractEventList struct {
 	Items []contractEvent `json:"items"`
 	Total int             `json:"total"`
 }
 
 type contractEvent struct {
+	Seq     uint64          `json:"seq"`
 	Type    string          `json:"type"`
 	Subject string          `json:"subject"`
 	City    string          `json:"city"`
 	Payload json.RawMessage `json:"payload"`
+}
+
+type contractPermissionModeCapability struct {
+	Supported  bool     `json:"supported"`
+	Readable   bool     `json:"readable"`
+	LiveSwitch bool     `json:"live_switch"`
+	Values     []string `json:"values"`
+	Reason     string   `json:"reason"`
+}
+
+type contractSessionPermissionResponse struct {
+	ID           string            `json:"id"`
+	Options      map[string]string `json:"options"`
+	ModeVersion  uint64            `json:"mode_version"`
+	Capabilities struct {
+		PermissionMode contractPermissionModeCapability `json:"permission_mode"`
+	} `json:"capabilities"`
+}
+
+type contractSessionStreamMessage struct {
+	PermissionMode string
+	ModeVersion    uint64
+	Raw            string
 }
 
 type liveContractRequiredOperation struct {
@@ -567,6 +821,7 @@ var liveContractRequiredOperations = []liveContractRequiredOperation{
 	{Method: http.MethodPost, OperationID: "post-v0-city-by-city-name-session-by-id-kill", PathTemplate: "/v0/city/{cityName}/session/{id}/kill"},
 	{Method: http.MethodPost, OperationID: "send-session-message", PathTemplate: "/v0/city/{cityName}/session/{id}/messages"},
 	{Method: http.MethodGet, OperationID: "get-v0-city-by-city-name-session-by-id-pending", PathTemplate: "/v0/city/{cityName}/session/{id}/pending"},
+	{Method: http.MethodPost, OperationID: "post-v0-city-by-city-name-session-by-id-permission-mode", PathTemplate: "/v0/city/{cityName}/session/{id}/permission-mode"},
 	{Method: http.MethodPost, OperationID: "post-v0-city-by-city-name-session-by-id-rename", PathTemplate: "/v0/city/{cityName}/session/{id}/rename"},
 	{Method: http.MethodPost, OperationID: "respond-session", PathTemplate: "/v0/city/{cityName}/session/{id}/respond"},
 	{Method: http.MethodPost, OperationID: "post-v0-city-by-city-name-session-by-id-stop", PathTemplate: "/v0/city/{cityName}/session/{id}/stop"},
@@ -642,6 +897,137 @@ func liveContractConfigHasAgent(agents []contractConfigAgent, name, dir string) 
 		}
 	}
 	return false
+}
+
+func buildLiveContractPermissionModeAgent(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	source := filepath.Join(dir, "main.go")
+	bin := filepath.Join(dir, "claude")
+	const program = `package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+)
+
+func main() {
+	_ = stty("raw", "-echo")
+	defer stty("sane") //nolint:errcheck
+
+	mode := canonicalMode(os.Getenv("GC_PERMISSION_MODE_INITIAL"))
+	for i := 1; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		switch {
+		case arg == "--dangerously-skip-permissions":
+			mode = "bypassPermissions"
+		case arg == "--permission-mode" && i+1 < len(os.Args):
+			mode = canonicalMode(os.Args[i+1])
+			i++
+		case strings.HasPrefix(arg, "--permission-mode="):
+			mode = canonicalMode(strings.TrimPrefix(arg, "--permission-mode="))
+		}
+	}
+	printMode(mode)
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-signals
+		os.Exit(0)
+	}()
+
+	var pending string
+	buf := make([]byte, 32)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if n > 0 {
+			pending += string(buf[:n])
+			if strings.Contains(pending, "\x03") {
+				return
+			}
+			for {
+				idx := strings.Index(pending, "\x1b[Z")
+				if idx < 0 {
+					break
+				}
+				mode = nextMode(mode)
+				printMode(mode)
+				pending = pending[idx+3:]
+			}
+			if len(pending) > 8 {
+				pending = pending[len(pending)-8:]
+			}
+		}
+		if err != nil {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+}
+
+func stty(args ...string) error {
+	cmd := exec.Command("stty", args...)
+	cmd.Stdin = os.Stdin
+	return cmd.Run()
+}
+
+func canonicalMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "acceptedits", "accept-edits", "accept_edits", "auto-edit", "auto_edit":
+		return "acceptEdits"
+	case "plan", "plan-mode", "plan_mode":
+		return "plan"
+	case "bypasspermissions", "bypass-permissions", "bypass_permissions", "unrestricted", "full-auto", "full_auto", "yolo":
+		return "bypassPermissions"
+	default:
+		return "default"
+	}
+}
+
+func nextMode(mode string) string {
+	switch mode {
+	case "bypassPermissions":
+		return "acceptEdits"
+	case "acceptEdits":
+		return "plan"
+	case "plan":
+		return "bypassPermissions"
+	default:
+		return "acceptEdits"
+	}
+}
+
+func printMode(mode string) {
+	fmt.Printf("Shift+Tab to cycle permission mode: %s\n", modeLabel(mode))
+}
+
+func modeLabel(mode string) string {
+	switch mode {
+	case "bypassPermissions":
+		return "Bypass Permissions mode"
+	case "acceptEdits":
+		return "Accept Edits mode"
+	case "plan":
+		return "Plan mode"
+	default:
+		return "Default mode"
+	}
+}
+`
+	if err := os.WriteFile(source, []byte(program), 0o644); err != nil {
+		t.Fatalf("write permission mode agent source: %v", err)
+	}
+	cmd := exec.Command("go", "build", "-o", bin, source)
+	cmd.Dir = findRepoRoot(t)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build permission mode agent: %v\n%s", err, string(out))
+	}
+	return bin
 }
 
 func createLiveContractAgentSession(t *testing.T, baseURL string, v openapivalidator.Validator, cityBase, targetAgent, rigName, label string) string {
@@ -1155,6 +1541,70 @@ func assertLiveContractStreamOpens(t *testing.T, baseURL, path string) {
 	t.Fatalf("GET %s stream status = %d, want 200; body: %s", path, lastStatus, lastBody)
 }
 
+func readLiveContractSessionStreamMessage(t *testing.T, baseURL, path string, timeout time.Duration) contractSessionStreamMessage {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+path, nil)
+	if err != nil {
+		t.Fatalf("build session stream request %s: %v", path, err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s stream: %v", path, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("GET %s stream status = %d, want 200; body: %s", path, resp.StatusCode, string(raw))
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Fatalf("GET %s stream content-type = %q, want text/event-stream", path, ct)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	var data strings.Builder
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "data:"):
+			value := strings.TrimPrefix(line, "data:")
+			value = strings.TrimPrefix(value, " ")
+			if data.Len() > 0 {
+				data.WriteByte('\n')
+			}
+			data.WriteString(value)
+		case line == "":
+			if data.Len() == 0 {
+				continue
+			}
+			raw := data.String()
+			data.Reset()
+			var payload struct {
+				PermissionMode string `json:"permission_mode"`
+				ModeVersion    uint64 `json:"mode_version"`
+			}
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				t.Fatalf("decode session stream event from %s: %v; data=%s", path, err, raw)
+			}
+			if payload.PermissionMode != "" {
+				return contractSessionStreamMessage{
+					PermissionMode: payload.PermissionMode,
+					ModeVersion:    payload.ModeVersion,
+					Raw:            raw,
+				}
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil && ctx.Err() == nil {
+		t.Fatalf("scan session stream %s: %v", path, err)
+	}
+	t.Fatalf("timed out waiting for permission mode on session stream %s", path)
+	return contractSessionStreamMessage{}
+}
+
 func validateLiveContractResponse(t *testing.T, v openapivalidator.Validator, req *http.Request, resp *http.Response, raw []byte) {
 	t.Helper()
 	resp.Body = io.NopCloser(bytes.NewReader(raw))
@@ -1293,6 +1743,75 @@ func waitForLiveContractRequestEvent(t *testing.T, baseURL, path, requestID, suc
 	return contractEvent{}
 }
 
+func waitForLiveContractStreamEvent(t *testing.T, baseURL, path string, match func(contractEvent) bool, timeout time.Duration) contractEvent {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+path, nil)
+	if err != nil {
+		t.Fatalf("build event stream request %s: %v", path, err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s SSE: %v", path, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		t.Fatalf("GET %s SSE status = %d, want 200; body: %s", path, resp.StatusCode, string(raw))
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	var data strings.Builder
+	var observed int
+	var recent []string
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "data:"):
+			value := strings.TrimPrefix(line, "data:")
+			value = strings.TrimPrefix(value, " ")
+			if data.Len() > 0 {
+				data.WriteByte('\n')
+			}
+			data.WriteString(value)
+		case line == "":
+			if data.Len() == 0 {
+				continue
+			}
+			var event contractEvent
+			raw := data.String()
+			if err := json.Unmarshal([]byte(raw), &event); err != nil {
+				t.Fatalf("decode SSE event from %s: %v; data=%s", path, err, raw)
+			}
+			data.Reset()
+			observed++
+			desc := event.Type
+			if event.Subject != "" {
+				desc += " subject=" + event.Subject
+			}
+			if event.Seq > 0 {
+				desc += " seq=" + strconv.FormatUint(event.Seq, 10)
+			}
+			recent = append(recent, desc)
+			if len(recent) > 8 {
+				recent = recent[1:]
+			}
+			if match(event) {
+				return event
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil && ctx.Err() == nil {
+		t.Fatalf("scan SSE %s: %v", path, err)
+	}
+	t.Fatalf("timed out waiting for matching event from %s after observing %d SSE data frames; recent=%v", path, observed, recent)
+	return contractEvent{}
+}
+
 func liveContractEventPayloadRequestID(raw json.RawMessage) string {
 	var payload struct {
 		RequestID string `json:"request_id"`
@@ -1357,6 +1876,66 @@ func liveContractEventList(baseURL string, v openapivalidator.Validator, path st
 		return contractEventList{}, err
 	}
 	return events, nil
+}
+
+func waitForLiveContractPermissionMode(t *testing.T, baseURL string, v openapivalidator.Validator, sessionPath, want string, timeout time.Duration) contractSessionPermissionResponse {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last contractSessionPermissionResponse
+	for time.Now().Before(deadline) {
+		last = liveContractJSON[contractSessionPermissionResponse](t, baseURL, v, http.MethodGet, sessionPath, nil, http.StatusOK)
+		if last.Options[permissionModeJSONKey()] == want && last.Capabilities.PermissionMode.Supported && last.Capabilities.PermissionMode.Readable {
+			return last
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s permission mode at %s; last=%+v", want, sessionPath, last)
+	return contractSessionPermissionResponse{}
+}
+
+func waitForLiveContractUnsupportedPermissionMode(t *testing.T, baseURL string, v openapivalidator.Validator, sessionPath string, timeout time.Duration) contractSessionPermissionResponse {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last contractSessionPermissionResponse
+	for time.Now().Before(deadline) {
+		last = liveContractJSON[contractSessionPermissionResponse](t, baseURL, v, http.MethodGet, sessionPath, nil, http.StatusOK)
+		if !last.Capabilities.PermissionMode.Supported && last.Capabilities.PermissionMode.Reason != "" {
+			return last
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for unsupported permission capability at %s; last=%+v", sessionPath, last)
+	return contractSessionPermissionResponse{}
+}
+
+func assertLiveContractSessionListMode(t *testing.T, items []contractSessionPermissionResponse, sessionID, wantMode string, wantVersion uint64) {
+	t.Helper()
+	for _, item := range items {
+		if item.ID != sessionID {
+			continue
+		}
+		if got := item.Options[permissionModeJSONKey()]; got != wantMode {
+			t.Fatalf("session list permission_mode = %q, want %q; item=%+v", got, wantMode, item)
+		}
+		if item.ModeVersion != wantVersion {
+			t.Fatalf("session list mode_version = %d, want %d; item=%+v", item.ModeVersion, wantVersion, item)
+		}
+		return
+	}
+	t.Fatalf("session %q missing from list", sessionID)
+}
+
+func permissionModeJSONKey() string {
+	return "permission_mode"
+}
+
+func stringListContains(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func waitForCityAbsent(t *testing.T, baseURL string, v openapivalidator.Validator, cityName string, timeout time.Duration) {

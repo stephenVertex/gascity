@@ -187,9 +187,11 @@ func registerSSEStringID[I any](
 // site sees only the list of headers the operation emits and each
 // description has a single source of truth.
 var sseStatusHeaders = map[string]string{
-	"GC-Agent-Status":   "Agent runtime status at the time streaming began. Emitted as \"stopped\" when the agent is not running (the stream then serves replayed transcript from the session log).",
-	"GC-Session-State":  "Session state at the time streaming began (e.g. active, closed).",
-	"GC-Session-Status": "Runtime status at the time streaming began. Emitted as \"stopped\" when the session's underlying process is not running.",
+	"GC-Agent-Status":            "Agent runtime status at the time streaming began. Emitted as \"stopped\" when the agent is not running (the stream then serves replayed transcript from the session log).",
+	"GC-Session-State":           "Session state at the time streaming began (e.g. active, closed).",
+	"GC-Session-Status":          "Runtime status at the time streaming began. Emitted as \"stopped\" when the session's underlying process is not running.",
+	"GC-Session-Permission-Mode": "Canonical runtime permission mode at the time streaming began, when known.",
+	"GC-Session-Mode-Version":    "Monotonically increasing session permission mode version at the time streaming began, when known.",
 }
 
 // sseResponseHeaders builds a Responses map declaring the named

@@ -57,7 +57,9 @@ type HeartbeatEvent struct {
 // SessionActivityEvent reports the current activity state of a session stream.
 // Emitted whenever the session transitions between idle and in-turn states.
 type SessionActivityEvent struct {
-	Activity string `json:"activity" doc:"Session activity state: 'idle' or 'in-turn'." example:"idle"`
+	Activity       string `json:"activity" doc:"Session activity state: 'idle' or 'in-turn'." example:"idle"`
+	PermissionMode string `json:"permission_mode,omitempty" doc:"Canonical runtime permission mode when known."`
+	ModeVersion    uint64 `json:"mode_version,omitempty" doc:"Monotonically increasing permission mode version when known."`
 }
 
 // resolveAfterSeq returns the reconnect position from Last-Event-ID or after_seq.

@@ -19,27 +19,33 @@ import (
 // SessionStreamMessageEvent carries normalized conversation turns on the
 // session SSE stream.
 type SessionStreamMessageEvent struct {
-	ID         string                     `json:"id"`
-	Template   string                     `json:"template"`
-	Provider   string                     `json:"provider" doc:"Producing provider identifier (claude, codex, gemini, open-code, etc.)."`
-	Format     string                     `json:"format"`
-	Turns      []outputTurn               `json:"turns"`
-	Pagination *sessionlog.PaginationInfo `json:"pagination,omitempty"`
+	ID             string                     `json:"id"`
+	Template       string                     `json:"template"`
+	Provider       string                     `json:"provider" doc:"Producing provider identifier (claude, codex, gemini, open-code, etc.)."`
+	Format         string                     `json:"format"`
+	Turns          []outputTurn               `json:"turns"`
+	Pagination     *sessionlog.PaginationInfo `json:"pagination,omitempty"`
+	PermissionMode string                     `json:"permission_mode,omitempty" doc:"Canonical runtime permission mode when known."`
+	ModeVersion    uint64                     `json:"mode_version,omitempty" doc:"Monotonically increasing permission mode version when known."`
 }
 
 // SessionStreamRawMessageEvent carries provider-native transcript frames on
 // the session SSE stream.
 type SessionStreamRawMessageEvent struct {
-	ID         string                     `json:"id"`
-	Template   string                     `json:"template"`
-	Provider   string                     `json:"provider" doc:"Producing provider identifier (claude, codex, gemini, open-code, etc.). Consumers use this to dispatch per-provider frame parsing."`
-	Format     string                     `json:"format"`
-	Messages   []SessionRawMessageFrame   `json:"messages" doc:"Provider-native transcript frames, emitted verbatim as the provider wrote them."`
-	Pagination *sessionlog.PaginationInfo `json:"pagination,omitempty"`
+	ID             string                     `json:"id"`
+	Template       string                     `json:"template"`
+	Provider       string                     `json:"provider" doc:"Producing provider identifier (claude, codex, gemini, open-code, etc.). Consumers use this to dispatch per-provider frame parsing."`
+	Format         string                     `json:"format"`
+	Messages       []SessionRawMessageFrame   `json:"messages" doc:"Provider-native transcript frames, emitted verbatim as the provider wrote them."`
+	Pagination     *sessionlog.PaginationInfo `json:"pagination,omitempty"`
+	PermissionMode string                     `json:"permission_mode,omitempty" doc:"Canonical runtime permission mode when known."`
+	ModeVersion    uint64                     `json:"mode_version,omitempty" doc:"Monotonically increasing permission mode version when known."`
 }
 
 type sessionStreamActivityPayload struct {
-	Activity string `json:"activity"`
+	Activity       string `json:"activity"`
+	PermissionMode string `json:"permission_mode,omitempty"`
+	ModeVersion    uint64 `json:"mode_version,omitempty"`
 }
 
 type syntheticContentBlock struct {
@@ -124,6 +130,12 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	if !running {
 		w.Header().Set("GC-Session-Status", "stopped")
 	}
+	if mode, version := s.sessionPermissionModeHeaderValues(info); mode != "" {
+		w.Header().Set("GC-Session-Permission-Mode", mode)
+		if version != "" {
+			w.Header().Set("GC-Session-Mode-Version", version)
+		}
+	}
 	w.WriteHeader(http.StatusOK)
 	if err := http.NewResponseController(w).Flush(); err != nil {
 		_ = err
@@ -131,13 +143,15 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	if format == "raw" && !info.Closed {
-		data, _ := json.Marshal(SessionStreamRawMessageEvent{
+		event := SessionStreamRawMessageEvent{
 			ID:       info.ID,
 			Template: info.Template,
 			Provider: info.Provider,
 			Format:   "raw",
 			Messages: []SessionRawMessageFrame{},
-		})
+		}
+		s.decorateRawStreamMessage(info, &event)
+		data, _ := json.Marshal(event)
 		writeSSE(w, "message", 0, data)
 	}
 	if info.Closed {
@@ -184,18 +198,20 @@ func (s *Server) emitClosedSessionSnapshot(w http.ResponseWriter, info session.I
 		return
 	}
 
-	data, err := json.Marshal(SessionStreamMessageEvent{
+	event := SessionStreamMessageEvent{
 		ID:       info.ID,
 		Template: info.Template,
 		Provider: info.Provider,
 		Format:   "conversation",
 		Turns:    turns,
-	})
+	}
+	s.decorateStreamMessage(info, &event)
+	data, err := json.Marshal(event)
 	if err != nil {
 		return
 	}
 	writeSSE(w, "turn", 1, data)
-	actData, _ := json.Marshal(sessionStreamActivityPayload{Activity: "idle"})
+	actData, _ := json.Marshal(s.sessionStreamActivityPayload(info, "idle"))
 	writeSSE(w, "activity", 2, actData)
 }
 
@@ -208,18 +224,20 @@ func (s *Server) emitClosedSessionSnapshotRaw(w http.ResponseWriter, info sessio
 		return
 	}
 
-	data, err := json.Marshal(SessionStreamRawMessageEvent{
+	event := SessionStreamRawMessageEvent{
 		ID:       info.ID,
 		Template: info.Template,
 		Provider: info.Provider,
 		Format:   "raw",
 		Messages: wrapRawFrameBytes(rawMessages),
-	})
+	}
+	s.decorateRawStreamMessage(info, &event)
+	data, err := json.Marshal(event)
 	if err != nil {
 		return
 	}
 	writeSSE(w, "message", 1, data)
-	actData, _ := json.Marshal(sessionStreamActivityPayload{Activity: "idle"})
+	actData, _ := json.Marshal(s.sessionStreamActivityPayload(info, "idle"))
 	writeSSE(w, "activity", 2, actData)
 }
 
@@ -276,13 +294,15 @@ func (s *Server) streamSessionTranscriptHistoryRaw(ctx context.Context, w http.R
 			}
 			if len(toSend) > 0 {
 				seq++
-				data, err := json.Marshal(SessionStreamRawMessageEvent{
+				event := SessionStreamRawMessageEvent{
 					ID:       info.ID,
 					Template: info.Template,
 					Provider: info.Provider,
 					Format:   "raw",
 					Messages: wrapRawFrameBytes(toSend),
-				})
+				}
+				s.decorateRawStreamMessage(info, &event)
+				data, err := json.Marshal(event)
 				if err == nil {
 					writeSSE(w, "message", seq, data)
 					lastProgress = time.Now()
@@ -298,7 +318,7 @@ func (s *Server) streamSessionTranscriptHistoryRaw(ctx context.Context, w http.R
 		if currentActivity != "" && currentActivity != lastActivity {
 			lastActivity = currentActivity
 			seq++
-			actData, _ := json.Marshal(sessionStreamActivityPayload{Activity: currentActivity})
+			actData, _ := json.Marshal(s.sessionStreamActivityPayload(info, currentActivity))
 			writeSSE(w, "activity", seq, actData)
 			lastProgress = time.Now()
 			emitted = true
@@ -319,7 +339,7 @@ func (s *Server) streamSessionTranscriptHistoryRaw(ctx context.Context, w http.R
 					activity = "in-turn"
 				}
 				seq++
-				actData, _ := json.Marshal(sessionStreamActivityPayload{Activity: activity})
+				actData, _ := json.Marshal(s.sessionStreamActivityPayload(info, activity))
 				writeSSE(w, "activity", seq, actData)
 				return true
 			}
@@ -431,13 +451,15 @@ func (s *Server) streamSessionTranscriptHistory(ctx context.Context, w http.Resp
 			}
 			if len(toSend) > 0 {
 				seq++
-				data, err := json.Marshal(SessionStreamMessageEvent{
+				event := SessionStreamMessageEvent{
 					ID:       info.ID,
 					Template: info.Template,
 					Provider: info.Provider,
 					Format:   "conversation",
 					Turns:    toSend,
-				})
+				}
+				s.decorateStreamMessage(info, &event)
+				data, err := json.Marshal(event)
 				if err == nil {
 					writeSSE(w, "turn", seq, data)
 					emitted = true
@@ -452,7 +474,7 @@ func (s *Server) streamSessionTranscriptHistory(ctx context.Context, w http.Resp
 		if activity != "" && activity != lastActivity {
 			lastActivity = activity
 			seq++
-			actData, _ := json.Marshal(sessionStreamActivityPayload{Activity: activity})
+			actData, _ := json.Marshal(s.sessionStreamActivityPayload(info, activity))
 			writeSSE(w, "activity", seq, actData)
 			emitted = true
 		}
@@ -522,6 +544,21 @@ func (s *Server) streamSessionPeekRaw(ctx context.Context, w http.ResponseWriter
 	var lastOutput string
 	var seq uint64
 	var lastPeekPendingID string
+	var lastMode string
+	var lastModeVersion uint64
+
+	emitModeIfChanged := func() bool {
+		snapshot := s.sessionPermissionModeSnapshot(info)
+		if !snapshot.Known || (snapshot.Mode == lastMode && snapshot.Version == lastModeVersion) {
+			return false
+		}
+		lastMode = snapshot.Mode
+		lastModeVersion = snapshot.Version
+		seq++
+		actData, _ := json.Marshal(s.sessionStreamActivityPayload(info, "idle"))
+		writeSSE(w, "activity", seq, actData)
+		return true
+	}
 
 	emitPending := func() {
 		pending, pErr := handle.Pending(ctx)
@@ -541,6 +578,7 @@ func (s *Server) streamSessionPeekRaw(ctx context.Context, w http.ResponseWriter
 			return
 		}
 		if err != nil {
+			emitModeIfChanged()
 			return
 		}
 		if output != lastOutput {
@@ -551,17 +589,21 @@ func (s *Server) streamSessionPeekRaw(ctx context.Context, w http.ResponseWriter
 					Role:    "assistant",
 					Content: []syntheticContentBlock{{Type: "text", Text: output}},
 				})
-				data, err := json.Marshal(SessionStreamRawMessageEvent{
+				event := SessionStreamRawMessageEvent{
 					ID:       info.ID,
 					Template: info.Template,
 					Provider: info.Provider,
 					Format:   "raw",
 					Messages: wrapRawFrameBytes([]json.RawMessage{fakeMsg}),
-				})
+				}
+				s.decorateRawStreamMessage(info, &event)
+				data, err := json.Marshal(event)
 				if err == nil {
 					writeSSE(w, "message", seq, data)
 				}
 			}
+		} else {
+			emitModeIfChanged()
 		}
 		emitPending()
 	}
@@ -596,12 +638,28 @@ func (s *Server) streamSessionPeek(ctx context.Context, w http.ResponseWriter, i
 	var lastOutput string
 	var seq uint64
 
+	var lastMode string
+	var lastModeVersion uint64
+	emitModeIfChanged := func() bool {
+		snapshot := s.sessionPermissionModeSnapshot(info)
+		if !snapshot.Known || (snapshot.Mode == lastMode && snapshot.Version == lastModeVersion) {
+			return false
+		}
+		lastMode = snapshot.Mode
+		lastModeVersion = snapshot.Version
+		seq++
+		actData, _ := json.Marshal(s.sessionStreamActivityPayload(info, "idle"))
+		writeSSE(w, "activity", seq, actData)
+		return true
+	}
+
 	emitPeek := func() {
 		output, err := handle.Peek(ctx, 100)
 		if errors.Is(err, session.ErrSessionInactive) {
 			return
 		}
 		if err != nil || output == lastOutput {
+			emitModeIfChanged()
 			return
 		}
 		lastOutput = output
@@ -611,13 +669,15 @@ func (s *Server) streamSessionPeek(ctx context.Context, w http.ResponseWriter, i
 		if output != "" {
 			turns = append(turns, outputTurn{Role: "output", Text: output})
 		}
-		data, err := json.Marshal(SessionStreamMessageEvent{
+		event := SessionStreamMessageEvent{
 			ID:       info.ID,
 			Template: info.Template,
 			Provider: info.Provider,
 			Format:   "text",
 			Turns:    turns,
-		})
+		}
+		s.decorateStreamMessage(info, &event)
+		data, err := json.Marshal(event)
 		if err != nil {
 			return
 		}
@@ -701,13 +761,15 @@ func (s *Server) streamSessionTranscriptLogRawHuma(ctx context.Context, send sse
 			}
 			if len(toSend) > 0 {
 				seq++
-				_ = send(sse.Message{ID: seq, Data: SessionStreamRawMessageEvent{
+				event := SessionStreamRawMessageEvent{
 					ID:       info.ID,
 					Template: info.Template,
 					Provider: info.Provider,
 					Format:   "raw",
 					Messages: wrapRawFrameBytes(toSend),
-				}})
+				}
+				s.decorateRawStreamMessage(info, &event)
+				_ = send(sse.Message{ID: seq, Data: event})
 				lastProgress = time.Now()
 				lastPendingID = ""
 				emitted = true
@@ -720,7 +782,7 @@ func (s *Server) streamSessionTranscriptLogRawHuma(ctx context.Context, send sse
 		if currentActivity != "" && currentActivity != lastActivity {
 			lastActivity = currentActivity
 			seq++
-			_ = send(sse.Message{ID: seq, Data: SessionActivityEvent{Activity: currentActivity}})
+			_ = send(sse.Message{ID: seq, Data: s.sessionActivityEvent(info, currentActivity)})
 			lastProgress = time.Now()
 			emitted = true
 		}
@@ -740,7 +802,7 @@ func (s *Server) streamSessionTranscriptLogRawHuma(ctx context.Context, send sse
 					activity = "in-turn"
 				}
 				seq++
-				_ = send(sse.Message{ID: seq, Data: SessionActivityEvent{Activity: activity}})
+				_ = send(sse.Message{ID: seq, Data: s.sessionActivityEvent(info, activity)})
 				return true
 			}
 			return false
@@ -857,13 +919,15 @@ func (s *Server) streamSessionTranscriptLogHuma(ctx context.Context, send sse.Se
 
 			if len(toSend) > 0 {
 				seq++
-				_ = send(sse.Message{ID: seq, Data: SessionStreamMessageEvent{
+				event := SessionStreamMessageEvent{
 					ID:       info.ID,
 					Template: info.Template,
 					Provider: info.Provider,
 					Format:   "conversation",
 					Turns:    toSend,
-				}})
+				}
+				s.decorateStreamMessage(info, &event)
+				_ = send(sse.Message{ID: seq, Data: event})
 				emitted = true
 			}
 			lastSentID = ids[len(ids)-1]
@@ -876,7 +940,7 @@ func (s *Server) streamSessionTranscriptLogHuma(ctx context.Context, send sse.Se
 		if activity != "" && activity != lastActivity {
 			lastActivity = activity
 			seq++
-			_ = send(sse.Message{ID: seq, Data: SessionActivityEvent{Activity: activity}})
+			_ = send(sse.Message{ID: seq, Data: s.sessionActivityEvent(info, activity)})
 			emitted = true
 		}
 		return emitted
@@ -948,6 +1012,20 @@ func (s *Server) streamSessionPeekRawHuma(ctx context.Context, send sse.Sender, 
 	var lastOutput string
 	var seq int
 	var lastPendingID string
+	var lastMode string
+	var lastModeVersion uint64
+
+	emitModeIfChanged := func() bool {
+		snapshot := s.sessionPermissionModeSnapshot(info)
+		if !snapshot.Known || (snapshot.Mode == lastMode && snapshot.Version == lastModeVersion) {
+			return false
+		}
+		lastMode = snapshot.Mode
+		lastModeVersion = snapshot.Version
+		seq++
+		_ = send(sse.Message{ID: seq, Data: s.sessionActivityEvent(info, "idle")})
+		return true
+	}
 
 	emitPending := func() {
 		pending, err := handle.Pending(ctx)
@@ -966,6 +1044,7 @@ func (s *Server) streamSessionPeekRawHuma(ctx context.Context, send sse.Sender, 
 			return
 		}
 		if err != nil || output == lastOutput {
+			emitModeIfChanged()
 			emitPending()
 			return
 		}
@@ -978,13 +1057,15 @@ func (s *Server) streamSessionPeekRawHuma(ctx context.Context, send sse.Sender, 
 			})
 			if err == nil {
 				seq++
-				_ = send(sse.Message{ID: seq, Data: SessionStreamRawMessageEvent{
+				event := SessionStreamRawMessageEvent{
 					ID:       info.ID,
 					Template: info.Template,
 					Provider: info.Provider,
 					Format:   "raw",
 					Messages: wrapRawFrameBytes([]json.RawMessage{fakeMsg}),
-				}})
+				}
+				s.decorateRawStreamMessage(info, &event)
+				_ = send(sse.Message{ID: seq, Data: event})
 			}
 		}
 
@@ -1028,6 +1109,20 @@ func (s *Server) streamSessionPeekHuma(ctx context.Context, send sse.Sender, inf
 
 	var lastOutput string
 	var seq int
+	var lastMode string
+	var lastModeVersion uint64
+
+	emitModeIfChanged := func() bool {
+		snapshot := s.sessionPermissionModeSnapshot(info)
+		if !snapshot.Known || (snapshot.Mode == lastMode && snapshot.Version == lastModeVersion) {
+			return false
+		}
+		lastMode = snapshot.Mode
+		lastModeVersion = snapshot.Version
+		seq++
+		_ = send(sse.Message{ID: seq, Data: s.sessionActivityEvent(info, "idle")})
+		return true
+	}
 
 	emitPeek := func() {
 		output, err := handle.Peek(ctx, 100)
@@ -1035,6 +1130,7 @@ func (s *Server) streamSessionPeekHuma(ctx context.Context, send sse.Sender, inf
 			return
 		}
 		if err != nil || output == lastOutput {
+			emitModeIfChanged()
 			return
 		}
 		lastOutput = output
@@ -1044,13 +1140,15 @@ func (s *Server) streamSessionPeekHuma(ctx context.Context, send sse.Sender, inf
 		if output != "" {
 			turns = append(turns, outputTurn{Role: "output", Text: output})
 		}
-		_ = send(sse.Message{ID: seq, Data: SessionStreamMessageEvent{
+		event := SessionStreamMessageEvent{
 			ID:       info.ID,
 			Template: info.Template,
 			Provider: info.Provider,
 			Format:   "text",
 			Turns:    turns,
-		}})
+		}
+		s.decorateStreamMessage(info, &event)
+		_ = send(sse.Message{ID: seq, Data: event})
 	}
 
 	emitPeek()

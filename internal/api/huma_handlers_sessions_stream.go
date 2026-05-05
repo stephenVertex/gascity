@@ -110,6 +110,12 @@ func (s *Server) streamSession(hctx huma.Context, input *SessionStreamInput, sen
 	if !running {
 		hctx.SetHeader("GC-Session-Status", "stopped")
 	}
+	if mode, version := s.sessionPermissionModeHeaderValues(info); mode != "" {
+		hctx.SetHeader("GC-Session-Permission-Mode", mode)
+		if version != "" {
+			hctx.SetHeader("GC-Session-Mode-Version", version)
+		}
+	}
 	flushSSEHeaders(hctx)
 
 	if info.Closed {
@@ -121,13 +127,15 @@ func (s *Server) streamSession(hctx huma.Context, input *SessionStreamInput, sen
 		return
 	}
 	if format == "raw" {
-		_ = send(sse.Message{ID: 0, Data: SessionStreamRawMessageEvent{
+		event := SessionStreamRawMessageEvent{
 			ID:       info.ID,
 			Template: info.Template,
 			Provider: info.Provider,
 			Format:   "raw",
 			Messages: []SessionRawMessageFrame{},
-		}})
+		}
+		s.decorateRawStreamMessage(info, &event)
+		_ = send(sse.Message{ID: 0, Data: event})
 	}
 	switch {
 	case hasHistory:
@@ -152,14 +160,16 @@ func (s *Server) emitClosedSessionSnapshotHuma(send sse.Sender, info session.Inf
 		return
 	}
 
-	_ = send(sse.Message{ID: 1, Data: SessionStreamMessageEvent{
+	event := SessionStreamMessageEvent{
 		ID:       info.ID,
 		Template: info.Template,
 		Provider: info.Provider,
 		Format:   "conversation",
 		Turns:    turns,
-	}})
-	_ = send(sse.Message{ID: 2, Data: SessionActivityEvent{Activity: "idle"}})
+	}
+	s.decorateStreamMessage(info, &event)
+	_ = send(sse.Message{ID: 1, Data: event})
+	_ = send(sse.Message{ID: 2, Data: s.sessionActivityEvent(info, "idle")})
 }
 
 func (s *Server) emitClosedSessionSnapshotRawHuma(send sse.Sender, info session.Info, history *worker.HistorySnapshot) {
@@ -171,12 +181,14 @@ func (s *Server) emitClosedSessionSnapshotRawHuma(send sse.Sender, info session.
 		return
 	}
 
-	_ = send(sse.Message{ID: 1, Data: SessionStreamRawMessageEvent{
+	event := SessionStreamRawMessageEvent{
 		ID:       info.ID,
 		Template: info.Template,
 		Provider: info.Provider,
 		Format:   "raw",
 		Messages: wrapRawFrameBytes(rawMessages),
-	}})
-	_ = send(sse.Message{ID: 2, Data: SessionActivityEvent{Activity: "idle"}})
+	}
+	s.decorateRawStreamMessage(info, &event)
+	_ = send(sse.Message{ID: 1, Data: event})
+	_ = send(sse.Message{ID: 2, Data: s.sessionActivityEvent(info, "idle")})
 }

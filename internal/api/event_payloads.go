@@ -342,12 +342,12 @@ func init() {
 	events.RegisterPayload(events.BeadUpdated, BeadEventPayload{})
 	events.RegisterPayload(events.BeadClosed, BeadEventPayload{})
 
-	// session.* / convoy.* / controller.* / city.* / order.* /
-	// provider.* — these events carry no structured payload today;
-	// their semantics are fully captured by the envelope's Actor,
-	// Subject, and Message fields. NoPayload registers an empty typed
-	// shape so the spec still emits a discriminated-union variant
-	// for the event type and the registry-coverage test passes.
+	// Most session.* / convoy.* / controller.* / city.* / order.* /
+	// provider.* events carry no structured payload today; their semantics
+	// are fully captured by the envelope's Actor, Subject, and Message fields.
+	// NoPayload registers an empty typed shape so the spec still emits a
+	// discriminated-union variant for the event type and the registry-coverage
+	// test passes. session.updated carries SessionUpdatedPayload below.
 	events.RegisterPayload(events.SessionWoke, events.NoPayload{})
 	events.RegisterPayload(events.SessionStopped, events.NoPayload{})
 	events.RegisterPayload(events.SessionCrashed, events.NoPayload{})
@@ -356,7 +356,7 @@ func init() {
 	events.RegisterPayload(events.SessionQuarantined, events.NoPayload{})
 	events.RegisterPayload(events.SessionIdleKilled, events.NoPayload{})
 	events.RegisterPayload(events.SessionSuspended, events.NoPayload{})
-	events.RegisterPayload(events.SessionUpdated, events.NoPayload{})
+	events.RegisterPayload(events.SessionUpdated, SessionUpdatedPayload{})
 	events.RegisterPayload(events.ConvoyCreated, events.NoPayload{})
 	events.RegisterPayload(events.ConvoyClosed, events.NoPayload{})
 	events.RegisterPayload(events.ControllerStarted, events.NoPayload{})

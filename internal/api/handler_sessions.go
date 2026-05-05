@@ -58,6 +58,10 @@ type sessionResponse struct {
 	// [[named_session]] configuration.
 	ConfiguredNamedSession bool `json:"configured_named_session,omitempty"`
 
+	Capabilities sessionCapabilities `json:"capabilities"`
+
+	ModeVersion uint64 `json:"mode_version,omitempty"`
+
 	// Options contains the effective per-session option overrides from
 	// template_overrides bead metadata (e.g., {"permission_mode":"unrestricted"}).
 	Options map[string]string `json:"options,omitempty"`
@@ -138,6 +142,7 @@ func sessionResponseWithReason(info session.Info, b *beads.Bead, cfg *config.Cit
 			r.Options = merged
 		}
 	}
+	applyConfiguredPermissionMode(&r, b)
 	if b == nil || info.Closed {
 		return r
 	}
@@ -495,6 +500,7 @@ func (s *Server) handleSessionRename(w http.ResponseWriter, r *http.Request) {
 // enrichSessionResponse populates runtime fields on a session response:
 // running state, active bead, peek output, and model/context metadata.
 func (s *Server) enrichSessionResponse(resp *sessionResponse, info session.Info, cfg *config.City, runtimeHandle any, wantPeek, liveActiveBead, allowWorkdirTranscriptDiscovery bool) {
+	s.enrichLivePermissionMode(resp, info)
 	if info.State != session.StateActive {
 		return
 	}
