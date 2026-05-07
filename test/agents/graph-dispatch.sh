@@ -14,6 +14,7 @@ REPORT_FILE="$GC_CITY/graph-workflow-steps.log"
 TRACE_FILE="$GC_CITY/graph-workflow-trace.log"
 ASSIGNEE="${GC_SESSION_NAME:-${GC_AGENT:-}}"
 HARNESS_STATE_DIR="$GC_CITY/.gc/test-harness"
+COMMAND_TIMEOUT="${GC_GRAPH_COMMAND_TIMEOUT:-30}"
 
 # Keep each worker/pool slot distinct at the beads actor layer.
 # `bd update --claim` claims "to you", so sharing one actor across sessions
@@ -34,8 +35,25 @@ if ! command -v timeout >/dev/null 2>&1; then
         }
     else
         timeout() {
+            local seconds="$1"
+            local child=""
+            local elapsed=0
+
             shift
-            "$@"
+            "$@" &
+            child=$!
+            while kill -0 "$child" >/dev/null 2>&1; do
+                if [ "$elapsed" -ge "$seconds" ]; then
+                    kill -TERM "$child" >/dev/null 2>&1 || true
+                    sleep 1
+                    kill -KILL "$child" >/dev/null 2>&1 || true
+                    wait "$child" >/dev/null 2>&1 || true
+                    return 124
+                fi
+                sleep 1
+                elapsed=$((elapsed + 1))
+            done
+            wait "$child"
         }
     fi
 fi
@@ -181,19 +199,19 @@ set_formula_verdict() {
 }
 
 show_status() {
-    timeout 10 bd show --json "$1" | json_payload | jq_bead '.status'
+    timeout "$COMMAND_TIMEOUT" bd show --json "$1" | json_payload | jq_bead '.status'
 }
 
 show_outcome() {
-    timeout 10 bd show --json "$1" | json_payload | jq_bead '.metadata["gc.outcome"]'
+    timeout "$COMMAND_TIMEOUT" bd show --json "$1" | json_payload | jq_bead '.metadata["gc.outcome"]'
 }
 
 show_assignee() {
-    timeout 10 bd show --json "$1" | json_payload | jq_bead '.assignee'
+    timeout "$COMMAND_TIMEOUT" bd show --json "$1" | json_payload | jq_bead '.assignee'
 }
 
 refresh_bead_json() {
-    timeout 10 bd show --json "$1" 2>/dev/null
+    timeout "$COMMAND_TIMEOUT" bd show --json "$1" 2>/dev/null
 }
 
 owned_status_ok() {
@@ -246,9 +264,9 @@ is_currently_blocked() {
     local blocked_json=""
 
     if [ -n "$root_id" ]; then
-        blocked_json=$(timeout 10 bd blocked --json --parent "$root_id" 2>/dev/null || true)
+        blocked_json=$(timeout "$COMMAND_TIMEOUT" bd blocked --json --parent "$root_id" 2>/dev/null || true)
     else
-        blocked_json=$(timeout 10 bd blocked --json 2>/dev/null || true)
+        blocked_json=$(timeout "$COMMAND_TIMEOUT" bd blocked --json 2>/dev/null || true)
     fi
 
     printf '%s\n' "$blocked_json" | json_payload | jq -e --arg id "$bead_id" '
@@ -263,14 +281,14 @@ fetch_ready_queue() {
     # gc hook resolves the current session via GC_ALIAS/GC_AGENT and uses the
     # session model work query tiers, so it can see both directly assigned work
     # and generic routed work for controller-materialized sessions.
-    timeout 10 gc hook 2>/dev/null
+    timeout "$COMMAND_TIMEOUT" gc hook 2>/dev/null
 }
 
 fetch_in_progress_queue() {
     if [ -z "$ASSIGNEE" ]; then
         return 1
     fi
-    timeout 10 bd list --assignee "$ASSIGNEE" --status=in_progress --json 2>/dev/null
+    timeout "$COMMAND_TIMEOUT" bd list --assignee "$ASSIGNEE" --status=in_progress --json 2>/dev/null
 }
 
 select_candidate_from_queue() {
@@ -380,7 +398,7 @@ while true; do
     claimed_here="false"
     if [ "$is_claimable_work" = "true" ] && [ "$owns_bead" != "true" ]; then
         ack_drain_if_idle || true
-        if ! claimed=$(timeout 10 bd update "$bead_id" --claim --json 2>/dev/null); then
+        if ! claimed=$(timeout "$COMMAND_TIMEOUT" bd update "$bead_id" --claim --json 2>/dev/null); then
             trace "claim-miss bead=$bead_id assignee=$ASSIGNEE"
             sleep 0.2
             continue
@@ -398,7 +416,7 @@ while true; do
     source_id=""
     work_dir=""
     if [ -n "$root_id" ]; then
-        if ! root_json=$(timeout 10 bd show --json "$root_id" 2>/dev/null); then
+        if ! root_json=$(timeout "$COMMAND_TIMEOUT" bd show --json "$root_id" 2>/dev/null); then
             trace "root-show-failed bead=$bead_id root=$root_id"
             sleep 1
             continue
@@ -406,7 +424,7 @@ while true; do
         source_id=$(printf '%s\n' "$root_json" | json_payload | jq_bead '.metadata["gc.source_bead_id"]')
     fi
     if [ -n "$source_id" ]; then
-        if ! source_json=$(timeout 10 bd show --json "$source_id" 2>/dev/null); then
+        if ! source_json=$(timeout "$COMMAND_TIMEOUT" bd show --json "$source_id" 2>/dev/null); then
             trace "source-show-failed bead=$bead_id source=$source_id"
             sleep 1
             continue
@@ -417,7 +435,7 @@ while true; do
     if is_currently_blocked "$bead_id" "$root_id"; then
         trace "skip-blocked bead=$bead_id ref=$ref assignee=$ASSIGNEE"
         if [ "$is_claimable_work" = "true" ]; then
-            if ! timeout 10 bd update "$bead_id" --assignee "" --status open >/dev/null 2>&1; then
+            if ! timeout "$COMMAND_TIMEOUT" bd update "$bead_id" --assignee "" --status open >/dev/null 2>&1; then
                 trace "release-failed bead=$bead_id ref=$ref"
             else
                 trace "released bead=$bead_id ref=$ref"
@@ -503,7 +521,7 @@ while true; do
     # false positives. Teardown beads must still run after body failure.
     sibling_hard_fail="false"
     if [ "$kind" != "cleanup" ] && [ -n "$root_id" ]; then
-        if sibling_json=$(timeout 10 bd list --all --limit=0 --json 2>/dev/null); then
+        if sibling_json=$(timeout "$COMMAND_TIMEOUT" bd list --all --limit=0 --json 2>/dev/null); then
             if printf '%s\n' "$sibling_json" | json_payload | jq -e \
                 --arg root "$root_id" --arg self "$bead_id" '
                     if type == "array" then

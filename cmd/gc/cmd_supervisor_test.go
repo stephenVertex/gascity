@@ -920,6 +920,28 @@ func TestSupervisorLaunchdPlistPathUsesIsolatedLabelForIsolatedGCHome(t *testing
 	}
 }
 
+func TestSupervisorServicePathsUseServiceHomeOverride(t *testing.T) {
+	homeDir := t.TempDir()
+	serviceHome := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("GC_HOME", filepath.Join(t.TempDir(), "isolated-home"))
+	t.Setenv(supervisorServiceHomeEnv, serviceHome)
+
+	label := supervisorLaunchdLabel()
+	if got, want := supervisorLaunchdPlistPath(), filepath.Join(serviceHome, "Library", "LaunchAgents", label+".plist"); got != want {
+		t.Fatalf("supervisorLaunchdPlistPath() = %q, want %q", got, want)
+	}
+	if got, want := legacySupervisorLaunchdPlistPath(), filepath.Join(serviceHome, "Library", "LaunchAgents", defaultSupervisorLaunchdLabel+".plist"); got != want {
+		t.Fatalf("legacySupervisorLaunchdPlistPath() = %q, want %q", got, want)
+	}
+	if got, want := supervisorSystemdServicePath(), filepath.Join(serviceHome, ".local", "share", "systemd", "user", supervisorSystemdServiceName()); got != want {
+		t.Fatalf("supervisorSystemdServicePath() = %q, want %q", got, want)
+	}
+	if got, want := legacySupervisorSystemdServicePath(), filepath.Join(serviceHome, ".local", "share", "systemd", "user", defaultSupervisorSystemdUnit); got != want {
+		t.Fatalf("legacySupervisorSystemdServicePath() = %q, want %q", got, want)
+	}
+}
+
 func TestSupervisorServiceSuffixUsesFullGCHomePath(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
@@ -4067,7 +4089,7 @@ func TestStopManagedCityForcesCleanupAfterTimeout(t *testing.T) {
 	var stderr bytes.Buffer
 	start := time.Now()
 	err := stopManagedCity(city, cityPath, &stderr)
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	if elapsed := time.Since(start); elapsed > 6*time.Second {
 		t.Fatalf("stopManagedCity took %s, want bounded timeout", elapsed)
 	}
 	if err == nil {

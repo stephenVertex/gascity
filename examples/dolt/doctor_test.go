@@ -26,21 +26,6 @@ func shellQuote(s string) string {
 // emits empty version".
 func strPtr(s string) *string { return &s }
 
-// lookPathInto looks up host on the host's PATH and, if found,
-// symlinks it into bin under the name linkName. Returns true on
-// success so callers can chain alternatives.
-func lookPathInto(t *testing.T, bin, host, linkName string) bool {
-	t.Helper()
-	hostPath, err := exec.LookPath(host)
-	if err != nil {
-		return false
-	}
-	if err := os.Symlink(hostPath, filepath.Join(bin, linkName)); err != nil {
-		t.Fatalf("symlink %q -> %q: %v", host, linkName, err)
-	}
-	return true
-}
-
 // doctorSandboxOpts configures the test sandbox for runDoctorCheck.
 //
 //	dolt == nil          → no dolt binary on PATH (simulates the
@@ -56,14 +41,13 @@ type doctorSandboxOpts struct {
 
 // doctorSandbox builds an isolated PATH directory for run.sh.
 //
-// The script invokes head, sed, and a timeout binary
-// (timeout/gtimeout) externally. Because the sandbox replaces PATH
-// wholesale (rather than prepending), we symlink real coreutils into
-// the sandbox so those calls still succeed; otherwise PATH isolation
-// would break the script before it reaches the logic under test.
-// dolt / flock / lsof are controlled per-test via opts so we can
-// toggle each missing-binary branch independently of the host's
-// installed tools.
+// The script invokes head, sed, and timeout externally. Because the
+// sandbox replaces PATH wholesale (rather than prepending), we symlink
+// real coreutils into the sandbox and install a deterministic timeout
+// shim so those calls still succeed; otherwise PATH isolation would
+// break the script before it reaches the logic under test. dolt / flock
+// / lsof are controlled per-test via opts so we can toggle each
+// missing-binary branch independently of the host's installed tools.
 func doctorSandbox(t *testing.T, opts doctorSandboxOpts) string {
 	t.Helper()
 	bin := t.TempDir()
@@ -76,19 +60,13 @@ func doctorSandbox(t *testing.T, opts doctorSandboxOpts) string {
 			t.Fatalf("symlink %q: %v", tool, err)
 		}
 	}
-	// run.sh wraps `dolt version` in run_bounded, which prefers
-	// gtimeout, then timeout. Symlink whichever is on the host as
-	// `timeout` in the sandbox so the bounded path is exercised.
-	// macOS without coreutils ships neither binary; fall back to
-	// python3, which run_bounded handles last. Skip if none of the
-	// three are available — the script's behavior is unobservable.
-	switch {
-	case lookPathInto(t, bin, "timeout", "timeout"):
-	case lookPathInto(t, bin, "gtimeout", "timeout"):
-	case lookPathInto(t, bin, "python3", "python3"):
-	default:
-		t.Skip("neither timeout, gtimeout, nor python3 installed; cannot exercise run_bounded")
-	}
+	writeExecutable(t, filepath.Join(bin, "timeout"), `#!/bin/sh
+if [ "$1" = "--kill-after=2" ]; then
+  shift
+fi
+shift
+exec "$@"
+`)
 	if opts.dolt != nil {
 		writeExecutable(t, filepath.Join(bin, "dolt"), fmt.Sprintf(
 			"#!/bin/sh\n[ \"$1\" = \"version\" ] && echo %s\nexit 0\n",

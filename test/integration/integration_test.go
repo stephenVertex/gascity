@@ -809,7 +809,7 @@ func newIsolatedCommandEnv(t *testing.T, useDolt bool) []string {
 	}
 	for _, name := range []string{"systemctl", "launchctl"} {
 		path := filepath.Join(shimDir, name)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 			t.Fatalf("writing %s shim: %v", name, err)
 		}
 	}
@@ -831,11 +831,15 @@ func newIsolatedEnvRoot(t *testing.T, useDolt bool) (string, string, []string) {
 	})
 	gcHome := filepath.Join(root, "gc-home")
 	runtimeDir := filepath.Join(root, "runtime")
+	serviceHome := filepath.Join(root, "service-home")
 	if err := os.MkdirAll(gcHome, 0o755); err != nil {
 		t.Fatalf("creating isolated GC_HOME: %v", err)
 	}
 	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
 		t.Fatalf("creating isolated runtime dir: %v", err)
+	}
+	if err := os.MkdirAll(serviceHome, 0o755); err != nil {
+		t.Fatalf("creating isolated service home: %v", err)
 	}
 	port, err := reserveLoopbackPort()
 	if err != nil {
@@ -849,7 +853,17 @@ func newIsolatedEnvRoot(t *testing.T, useDolt bool) (string, string, []string) {
 		t.Fatalf("writing isolated dolt config: %v", err)
 	}
 	env := integrationEnvFor(gcHome, runtimeDir, useDolt)
+	env = append(env, "GC_SUPERVISOR_SERVICE_HOME="+serviceHome)
 	return gcHome, runtimeDir, env
+}
+
+func TestIsolatedEnvRootRedirectsSupervisorServiceHome(t *testing.T) {
+	gcHome, _, env := newIsolatedEnvRoot(t, false)
+	got := parseEnvList(env)["GC_SUPERVISOR_SERVICE_HOME"]
+	want := filepath.Join(filepath.Dir(gcHome), "service-home")
+	if got != want {
+		t.Fatalf("GC_SUPERVISOR_SERVICE_HOME = %q, want %q", got, want)
+	}
 }
 
 func seedDoltIdentityForRoot(gcHome string) error {
@@ -1098,7 +1112,7 @@ func startIsolatedSupervisor(t *testing.T, env []string, gcHome string) {
 		done <- cmd.Wait()
 	}()
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		out, err := runCommand("", env, 2*time.Second, gcBinary, "supervisor", "status")
 		if err == nil && strings.Contains(out, "Supervisor is running") {

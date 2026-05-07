@@ -81,6 +81,7 @@ func NewEnv(gcBinary, gcHome, runtimeDir string) *Env {
 		}
 	}
 	e.vars["GC_HOME"] = gcHome
+	e.vars["GC_SUPERVISOR_SERVICE_HOME"] = filepath.Join(gcHome, "service-home")
 	e.vars["XDG_RUNTIME_DIR"] = runtimeDir
 	e.vars["GC_DOLT"] = "skip"
 	e.vars["GC_BEADS"] = "file"

@@ -1,6 +1,9 @@
 package acceptancehelpers
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestNewEnvInheritsClaudeGatewayVariables(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "synthetic-token")
@@ -27,5 +30,14 @@ func TestNewEnvInheritsClaudeGatewayVariables(t *testing.T) {
 		if got := env.Get(key); got != want {
 			t.Fatalf("NewEnv() %s = %q, want %q", key, got, want)
 		}
+	}
+}
+
+func TestNewEnvRedirectsSupervisorServiceHome(t *testing.T) {
+	gcHome := t.TempDir()
+	env := NewEnv("", gcHome, t.TempDir())
+
+	if got, want := env.Get("GC_SUPERVISOR_SERVICE_HOME"), filepath.Join(gcHome, "service-home"); got != want {
+		t.Fatalf("GC_SUPERVISOR_SERVICE_HOME = %q, want %q", got, want)
 	}
 }

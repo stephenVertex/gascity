@@ -353,7 +353,14 @@ func TestHumaBinary_CityCreateAsync(t *testing.T) {
 	// providers are registered (503 no_providers), which is the
 	// case before any city exists.
 	cityDir := filepath.Join(gcHome, "async-test-city")
-	body := `{"dir":"` + cityDir + `","provider":"claude"}`
+	bodyBytes, err := json.Marshal(map[string]string{
+		"dir":           cityDir,
+		"start_command": "sh -c 'trap \"exit 0\" TERM INT; while :; do sleep 1; done'",
+	})
+	if err != nil {
+		t.Fatalf("encode city create body: %v", err)
+	}
+	body := string(bodyBytes)
 	postReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v0/city", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("build post request: %v", err)

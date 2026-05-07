@@ -681,6 +681,7 @@ func TestGCLiveContract_SessionPermissionMode(t *testing.T) {
 		t.Fatalf("initial stream mode_version = %d, want zero; event=%s", streamInitial.ModeVersion, streamInitial.Raw)
 	}
 
+	eventSeqBeforeUpdate := liveContractEventHeadSeq(t, baseURL, validator, cityBase+"/events?limit=50")
 	updated := liveContractJSON[struct {
 		ID             string `json:"id"`
 		PermissionMode string `json:"permission_mode"`
@@ -693,7 +694,7 @@ func TestGCLiveContract_SessionPermissionMode(t *testing.T) {
 		t.Fatalf("permission mode update = %+v, want confirmed acceptEdits with version", updated)
 	}
 
-	event := waitForLiveContractStreamEvent(t, baseURL, cityBase+"/events/stream?after_seq=0", func(event contractEvent) bool {
+	event := waitForLiveContractStreamEvent(t, baseURL, cityBase+"/events/stream?after_seq="+strconv.FormatUint(eventSeqBeforeUpdate, 10), func(event contractEvent) bool {
 		if event.Type != "session.updated" || event.Subject != sessionID {
 			return false
 		}
@@ -1876,6 +1877,21 @@ func liveContractEventList(baseURL string, v openapivalidator.Validator, path st
 		return contractEventList{}, err
 	}
 	return events, nil
+}
+
+func liveContractEventHeadSeq(t *testing.T, baseURL string, v openapivalidator.Validator, path string) uint64 {
+	t.Helper()
+	events, err := liveContractEventList(baseURL, v, path)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	var head uint64
+	for _, event := range events.Items {
+		if event.Seq > head {
+			head = event.Seq
+		}
+	}
+	return head
 }
 
 func waitForLiveContractPermissionMode(t *testing.T, baseURL string, v openapivalidator.Validator, sessionPath, want string, timeout time.Duration) contractSessionPermissionResponse {

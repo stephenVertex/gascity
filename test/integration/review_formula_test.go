@@ -16,13 +16,40 @@ import (
 )
 
 // reviewWorkflowTimeout bounds waits for review-formula workflow beads to
-// close. Successful runs on CI average ~5 min per test, but runner variance
-// is high: the transient-retry test (soft-fail after 3 attempts) runs 3
-// full polecat cycles back-to-back, each ~3 min on a busy runner, plus
-// synthesis. The earlier 12-minute budget left no headroom and produced
-// intermittent timeout flakes; 18 min keeps a healthy margin for runner
-// contention without letting a genuinely stuck workflow loiter.
-const reviewWorkflowTimeout = 18 * time.Minute
+// close. Successful runs can finish much faster in isolation, but runner
+// variance is high: the personal-work test runs two review loops, and the
+// transient-retry test can run 3 full polecat cycles back-to-back, each ~3 min
+// on a busy runner, plus synthesis. The earlier 18-minute budget still timed
+// out under the sharded two-job integration runner while the workflow was
+// actively closing second-loop review steps. Twenty-four minutes keeps
+// headroom for shard contention without letting a genuinely stuck workflow
+// loiter until the package-level timeout.
+const reviewWorkflowTimeout = 24 * time.Minute
+
+const integrationSkipBackgroundOrdersTOML = `[orders]
+skip = [
+  "beads-health",
+  "cross-rig-deps",
+  "digest-generate",
+  "dolt-gc-nudge",
+  "dolt-health",
+  "dolt-remotes-patrol",
+  "gate-sweep",
+  "mol-dog-backup",
+  "mol-dog-compactor",
+  "mol-dog-doctor",
+  "mol-dog-jsonl",
+  "mol-dog-phantom-db",
+  "mol-dog-reaper",
+  "mol-dog-stale-db",
+  "order-tracking-sweep",
+  "orphan-sweep",
+  "prune-branches",
+  "spawn-storm-detect",
+  "wisp-compact",
+]
+
+`
 
 const testAdoptPRReviewCheck = `#!/usr/bin/env bash
 set -euo pipefail
@@ -309,7 +336,7 @@ on_exhausted = "hard_fail"
 		"issue": "",
 	})
 
-	workflow := waitForBeadClosed(t, cityDir, workflowID, 4*time.Minute)
+	workflow := waitForBeadClosed(t, cityDir, workflowID, reviewWorkflowTimeout)
 	if got := metaValue(workflow, "gc.outcome"); got != "pass" {
 		dumpWorkflowState(t, cityDir, workflowID)
 		t.Fatalf("workflow outcome = %q, want pass", got)
@@ -357,11 +384,12 @@ func setupReviewFormulaCity(t *testing.T, mode string, extraEnv map[string]strin
 
 	startCommand := workflowAgentStartCommand(mode, extraEnv)
 	cityToml := fmt.Sprintf(
-		"[workspace]\nname = %q\n\n[session]\nprovider = \"subprocess\"\n\n[daemon]\nformula_v2 = true\npatrol_interval = \"100ms\"\n\n"+
+		"[workspace]\nname = %q\n\n[session]\nprovider = \"subprocess\"\n\n[daemon]\nformula_v2 = true\npatrol_interval = \"100ms\"\n\n%s"+
 			"[[agent]]\nname = \"worker\"\nmax_active_sessions = 1\nstart_command = %q\n\n"+
 			"[[named_session]]\ntemplate = \"worker\"\nmode = \"always\"\n\n"+
+			"[[agent]]\nname = \"dog\"\nstart_command = %q\nmin_active_sessions = 0\nmax_active_sessions = 3\n\n"+
 			"[[agent]]\nname = \"polecat\"\nstart_command = %q\nmin_active_sessions = 0\nmax_active_sessions = 3\n",
-		cityName, startCommand, startCommand,
+		cityName, integrationSkipBackgroundOrdersTOML, startCommand, startCommand, startCommand,
 	)
 	configPath := filepath.Join(t.TempDir(), "review-formula.toml")
 	if err := os.WriteFile(configPath, []byte(cityToml), 0o644); err != nil {

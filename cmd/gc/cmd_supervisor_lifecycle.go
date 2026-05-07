@@ -884,6 +884,7 @@ func supervisorServiceExplicitEnvKeys(raw string) []string {
 const (
 	defaultSupervisorLaunchdLabel = "com.gascity.supervisor"
 	defaultSupervisorSystemdUnit  = "gascity-supervisor.service"
+	supervisorServiceHomeEnv      = "GC_SUPERVISOR_SERVICE_HOME"
 )
 
 func supervisorServiceSuffix() string {
@@ -1022,9 +1023,16 @@ func writeSupervisorServiceFile(path string, content []byte) error {
 	return os.Chmod(path, supervisorServiceFileMode)
 }
 
-func supervisorLaunchdPlistPath() string {
+func supervisorServiceHomeDir() string {
+	if v := strings.TrimSpace(os.Getenv(supervisorServiceHomeEnv)); v != "" {
+		return filepath.Clean(v)
+	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Library", "LaunchAgents", supervisorLaunchdLabel()+".plist")
+	return home
+}
+
+func supervisorLaunchdPlistPath() string {
+	return filepath.Join(supervisorServiceHomeDir(), "Library", "LaunchAgents", supervisorLaunchdLabel()+".plist")
 }
 
 func supervisorLaunchdServiceTarget(label string) string {
@@ -1070,18 +1078,15 @@ func warnSupervisorLaunchdRollback(stderr io.Writer, format string, args ...any)
 }
 
 func legacySupervisorLaunchdPlistPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Library", "LaunchAgents", defaultSupervisorLaunchdLabel+".plist")
+	return filepath.Join(supervisorServiceHomeDir(), "Library", "LaunchAgents", defaultSupervisorLaunchdLabel+".plist")
 }
 
 func supervisorSystemdServicePath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "systemd", "user", supervisorSystemdServiceName())
+	return filepath.Join(supervisorServiceHomeDir(), ".local", "share", "systemd", "user", supervisorSystemdServiceName())
 }
 
 func legacySupervisorSystemdServicePath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "systemd", "user", defaultSupervisorSystemdUnit)
+	return filepath.Join(supervisorServiceHomeDir(), ".local", "share", "systemd", "user", defaultSupervisorSystemdUnit)
 }
 
 func isolatedSupervisorHome() string {

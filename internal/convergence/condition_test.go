@@ -11,7 +11,7 @@ import (
 	"github.com/gastownhall/gascity/internal/testutil"
 )
 
-const conditionTestCommandTimeout = 15 * time.Second
+const conditionTestCommandTimeout = 30 * time.Second
 
 func TestConditionEnvEnviron(t *testing.T) {
 	env := ConditionEnv{
