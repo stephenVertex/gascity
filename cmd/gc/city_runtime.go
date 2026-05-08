@@ -22,6 +22,7 @@ import (
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/runtime"
 	sessionauto "github.com/gastownhall/gascity/internal/runtime/auto"
+	sessionpkg "github.com/gastownhall/gascity/internal/session"
 	"github.com/gastownhall/gascity/internal/supervisor"
 	"github.com/gastownhall/gascity/internal/telemetry"
 	"github.com/gastownhall/gascity/internal/workspacesvc"
@@ -672,6 +673,15 @@ func (cr *CityRuntime) tick(
 			if *prevPoolRunning != nil {
 				for sn, info := range cr.poolDeathHandlers {
 					if (*prevPoolRunning)[sn] && !currentSet[sn] {
+						skipHook, err := cr.skipPoolDeathHookForManagedStop(sn)
+						if err != nil {
+							fmt.Fprintf(cr.stderr, "%s: on_death %s skipped while checking session lifecycle: %v\n", cr.logPrefix, sn, err) //nolint:errcheck // best-effort stderr
+							continue
+						}
+						if skipHook {
+							fmt.Fprintf(cr.stderr, "%s: on_death %s skipped for managed session stop\n", cr.logPrefix, sn) //nolint:errcheck // best-effort stderr
+							continue
+						}
 						if _, err := shellRunHook(info.Command, info.Dir, info.Env); err != nil {
 							fmt.Fprintf(cr.stderr, "on_death %s: %v\n", sn, err) //nolint:errcheck // best-effort stderr
 						}
@@ -934,6 +944,35 @@ func (cr *CityRuntime) applyStartupConfigReload(
 	if reply.Outcome == reloadOutcomeFailed && dirty != nil {
 		dirty.Store(true)
 	}
+}
+
+func (cr *CityRuntime) skipPoolDeathHookForManagedStop(sessionName string) (bool, error) {
+	sessionName = strings.TrimSpace(sessionName)
+	if sessionName == "" {
+		return false, nil
+	}
+	store := cr.cityBeadStore()
+	if store == nil {
+		return false, nil
+	}
+	matches, err := sessionpkg.ExactMetadataSessionCandidates(store, false, map[string]string{"session_name": sessionName})
+	if err != nil {
+		return true, err
+	}
+	for _, bead := range matches {
+		if !isPoolManagedSessionBead(bead) {
+			continue
+		}
+		switch sessionpkg.State(strings.TrimSpace(bead.Metadata["state"])) {
+		case sessionpkg.StateActive, sessionpkg.StateAwake, sessionpkg.StateCreating:
+			continue
+		case "":
+			continue
+		default:
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (cr *CityRuntime) reloadConfigTraced(

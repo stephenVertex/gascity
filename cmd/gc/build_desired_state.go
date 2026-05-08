@@ -1924,17 +1924,14 @@ func selectOrCreatePoolSessionBead(
 		slot := claimPoolSlot(cfgAgent, *preferred, usedSlots)
 		return *preferred, slot, nil
 	}
-	// Reuse an existing active/creating session bead. Skip drained, closed,
-	// and asleep — asleep ephemerals are not restarted; a fresh session is
-	// created instead. The reconciler closes orphaned asleep beads.
+	// Reuse an existing active/creating session bead. Skip terminal or parked
+	// states: fresh scale demand must not resurrect a stopped/drained/swept
+	// lifecycle record that is no longer a live worker identity.
 	for _, bead := range bp.sessionBeads.Open() {
 		if bead.Status == "closed" {
 			continue
 		}
-		if isDrainedSessionBead(bead) {
-			continue
-		}
-		if bead.Metadata["state"] == "asleep" {
+		if !poolSessionBeadReusableForNewDemand(bead) {
 			continue
 		}
 		if isManualSessionBeadForAgent(bead, cfgAgent) {
@@ -2005,6 +2002,20 @@ func createPoolSessionBeadWithGuardedAlias(
 		fmt.Fprintf(bp.stderr, "createPoolSessionBeadWithGuardedAlias: locking alias %q for %s: %v; creating without alias\n", alias, template, lockErr) //nolint:errcheck
 	}
 	return createPoolSessionBead(bp.beadStore, template, bp.sessionBeads, poolSessionCreateStartedAt(bp), identity)
+}
+
+func poolSessionBeadReusableForNewDemand(bead beads.Bead) bool {
+	if isDrainedSessionBead(bead) {
+		return false
+	}
+	if strings.TrimSpace(bead.Metadata["close_reason"]) != "" || strings.TrimSpace(bead.Metadata["closed_at"]) != "" {
+		return false
+	}
+	switch strings.TrimSpace(bead.Metadata["state"]) {
+	case "active", "awake", "creating":
+		return true
+	}
+	return false
 }
 
 func sessionBeadHasAssignedWork(workBeads []beads.Bead, sessionBead beads.Bead) bool {

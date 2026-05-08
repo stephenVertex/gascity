@@ -4828,6 +4828,75 @@ func TestSelectOrCreatePoolSessionBead_ReusesPreferredDrained(t *testing.T) {
 	}
 }
 
+func TestSelectOrCreatePoolSessionBead_SkipsTerminalPoolBeadsForNewTier(t *testing.T) {
+	testCases := []struct {
+		name string
+		meta map[string]string
+	}{
+		{
+			name: "stopped",
+			meta: map[string]string{"state": "stopped"},
+		},
+		{
+			name: "gc swept",
+			meta: map[string]string{
+				"state":        "gc_swept",
+				"close_reason": "gc_swept",
+				"closed_at":    "2026-05-08T17:09:11Z",
+			},
+		},
+		{
+			name: "orphan close metadata",
+			meta: map[string]string{
+				"state":        "orphaned",
+				"close_reason": "orphaned",
+				"closed_at":    "2026-05-08T17:08:18Z",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := beads.NewMemStore()
+			meta := map[string]string{
+				"template":     "claude",
+				"agent_name":   "claude",
+				"session_name": "claude-terminal",
+				"pool_managed": "true",
+				"pool_slot":    "1",
+			}
+			for key, value := range tc.meta {
+				meta[key] = value
+			}
+			terminal, err := store.Create(beads.Bead{
+				Title:    "claude",
+				Type:     sessionBeadType,
+				Labels:   []string{sessionBeadLabel},
+				Metadata: meta,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot := &sessionBeadSnapshot{}
+			snapshot.add(terminal)
+			cfgAgent := config.Agent{Name: "claude", MinActiveSessions: intPtr(0), MaxActiveSessions: intPtr(5)}
+			bp := &agentBuildParams{
+				beadStore:    store,
+				sessionBeads: snapshot,
+				agents:       []config.Agent{cfgAgent},
+			}
+
+			result, _, err := selectOrCreatePoolSessionBead(bp, &cfgAgent, "claude", nil, map[string]bool{}, map[int]bool{})
+			if err != nil {
+				t.Fatalf("selectOrCreatePoolSessionBead: %v", err)
+			}
+			if result.ID == terminal.ID {
+				t.Fatalf("terminal pool bead state=%q close_reason=%q was reused for new-tier demand", terminal.Metadata["state"], terminal.Metadata["close_reason"])
+			}
+		})
+	}
+}
+
 func TestSelectOrCreateDependencyPoolSessionBead_SkipsDrained(t *testing.T) {
 	store := beads.NewMemStore()
 	drained, err := store.Create(beads.Bead{
