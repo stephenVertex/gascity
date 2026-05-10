@@ -1,123 +1,137 @@
-# Gas Town Example — Future Work
+# Gas Town Example - Future Work
 
-Tracks gc commands and features referenced in prompts/formulas that
-don't exist yet in the gc binary. This file is the gap analysis between
-"Gas Town expressed as configuration" and "gc can actually run it."
+Tracks the remaining gaps between the Gastown packs under
+`examples/gastown/` and the current `gc` implementation.
 
-## Missing gc commands
+This file used to be a broad list of commands referenced by early
+prompts/formulas that did not exist yet. Most of those gaps have since
+closed. The current status is:
 
-Commands referenced in prompts and formulas but not yet implemented.
-Grouped by priority tier.
+- Core propulsion exists: `gc hook`, `gc sling`, `gc prime`, `gc handoff`,
+  `gc runtime drain-ack`, `gc runtime request-restart`.
+- Operational inspection exists: `gc status`, `gc session list`, `gc session
+  peek`, `gc session logs`, `gc doctor`, `gc events --watch`.
+- Coordination exists: `gc mail ...`, `gc convoy ...`, `gc order ...`,
+  `gc bd ...` passthrough, formulas, wisps, and controller dispatch.
+- Rig dormancy exists as `gc rig suspend/resume`; rig process refresh exists
+  as `gc rig restart`; rig health exists as `gc rig status`.
 
-### Tier 1: Core Propulsion
+Use this document for the remaining edge work, not as a complete command
+inventory.
 
-These are required for any agent to do useful work.
+## Remaining gc gaps
 
-| Command | Description | Referenced in |
-|---------|-------------|---------------|
-| `gc hook` | **NEEDS IMPL:** Thin wrapper over bd protocol: (1) `bd list --assignee=$GC_AGENT --status=in_progress` (current work), (2) `bd ready --assignee=<pool>` (search pool), (3) `bd update <bead> --claim --assignee=$GC_AGENT` (atomic grab). Returns current/claimed bead or nothing. | All 8 prompts, most formulas |
-| ~~`gc sling <bead> <rig>`~~ | **RESOLVED:** Use `bd update <bead> --assignee=<role>` + pool auto-scaling | mayor, deacon, convoy-feed, orphan-scan, session-gc |
-| ~~`gc done`~~ | **RESOLVED:** Push branch + `bd create --type=merge-request --assignee=refinery` + `bd close <work-bead>` + exit | polecat, dog |
-| ~~`gc nudge <target> "msg"`~~ | **RESOLVED:** Use `gc session nudge <name> <msg>` for message delivery. Scoped to health patrol (deacon/dog). Remove from mayor/crew/witness prompts. | mayor, deacon, witness, crew, refinery, boot-triage |
-| ~~`gc polecat list/nuke/status/remove`~~ | **RESOLVED:** `gc session list` (with filters) for listing/status. Self-nuke on success; reconciler + idempotent resume on crash; crash loop backoff prevents thrashing. No polecat-specific commands. | mayor, witness, refinery |
-| ~~`gc session status/start/stop`~~ | **RESOLVED:** Controller reconciler handles liveness + restart. `gc session list` for status. | witness, deacon, boot-triage |
+These are the command or feature gaps still visible after auditing the
+current implementation, prompts, formulas, and pack scripts.
 
-### Tier 2: Agent Management
+| Gap | Current status | Action |
+|-----|----------------|--------|
+| `gc context --usage` | Not implemented. No current Gastown prompt/formula appears to call it directly, but older roadmap text expected a provider-specific context utilization query. | Decide whether this is still wanted. If yes, define provider contract and expose through the session/worker boundary. |
+| `gc mail hook <id>` | Not implemented. Current prompts use `gc mail read/peek/archive/reply` and ordinary bead assignment instead. | Probably delete as a planned command unless a prompt starts needing "turn mail into assigned work" as a first-class operation. |
+| `gc mail send --human` | Not implemented as a flag. Current supported form is `gc mail send human ...`. | Prefer documenting `human` as the recipient. Add the flag only if scripts need backwards-compatible sugar. |
+| `gc rig start/stop/park/dock/unpark/undock/reboot` | Not implemented. The current command set is `add`, `list`, `remove`, `restart`, `resume`, `set-endpoint`, `status`, `suspend`. | Keep prompts on `suspend/resume/restart/status`, or implement aliases only after a concrete UX decision. |
 
-Required before multi-agent orchestration works.
+## Prompt and doc cleanup
 
-| Command | Description | Referenced in |
-|---------|-------------|---------------|
-| ~~`gc handoff -s "..." -m "..."`~~ | **RESOLVED:** `gc mail send -s "HANDOFF" -m "..."` + exit. On restart, `gc hook` finds in-progress work; handoff mail in ready queue provides context. | mayor, deacon, witness, refinery, polecat, crew |
-| ~~`gc prime`~~ | **RESOLVED:** Already implemented. | polecat, all prompts (recovery note) |
-| ~~`gc escalate "desc" -s SEVERITY`~~ | **RESOLVED:** Just mail: `gc mail send witness/ -s "ESCALATION: <desc>" -m "<details>"`. Prompt spells out the protocol. | polecat |
-| ~~`gc mq list/submit/integration`~~ | **RESOLVED:** MR beads replace merge queue (`gc hook` for refinery). Integration branches are git workflow + bead metadata — gastown-gc helper territory, not SDK primitive. | refinery |
-| ~~`gc deacon heartbeat/cleanup-orphans/redispatch/zombie-scan`~~ | **RESOLVED:** Controller handles all: liveness (no heartbeat file), orphan cleanup (reconciler), redispatch (`bd update --assignee=<pool>`), zombie detection (dead session restart + crash loop backoff). | deacon |
-| ~~`gc boot status/spawn/triage`~~ | **RESOLVED:** Controller handles agent liveness and restart. Boot role's job (watch deacon, restart if dead) is the controller's reconcile loop. | boot |
-| ~~`gc dog status/done/clear/list/add/remove`~~ | **RESOLVED:** Dogs are pooled agents. `gc session list` for status, `bd close` + exit for done, pool auto-scaling for add/remove. | dog, deacon-patrol |
-| ~~`gc mayor stop/start`~~ | **RESOLVED:** Mayor is just an agent. Controller handles liveness and restart. No role-specific commands. | deacon |
+These are not missing SDK primitives, but they are current text edges in the
+Gastown example.
 
-### Tier 3: Operational
+| Location | Issue | Suggested fix |
+|----------|-------|---------------|
+| `packs/gastown/agents/mayor/prompt.template.md` | The rig lifecycle section still describes `stop/start` and `restart/reboot`, while the CLI only has `suspend/resume/restart/status` for rigs. | Rewrite that section around the implemented verbs. |
+| `examples/gastown/SDK-ROADMAP.md` | This file repeats many of the old `FUTURE.md` claims, including stale entries for `gc peek`, `gc doctor`, prompt rendering, pre-start hooks, and mail lifecycle. | Either archive it or rewrite it to match this file. |
+| Historical comments/tests mentioning `gc handoff` | Some comments correctly distinguish bare `gc handoff` from `gc handoff --auto`. | No command gap; keep only if useful as regression context. |
 
-Important for full Gas Town operation.
+## Implemented command surfaces
 
-| Command | Description | Referenced in |
-|---------|-------------|---------------|
-| `gc peek <target> [lines]` | **NEEDS IMPL:** New agent API — get last N lines of session output. Delegates to `session/tmux` (`tmux capture-pane`). | witness, boot-triage |
-| ~~`gc feed --since <duration>`~~ | **RESOLVED:** Already exists as `gc events --since <duration> [--type <type>]` | deacon-patrol, boot-triage, digest-generate |
-| ~~`gc worktree <rig>` / `list` / `remove`~~ | **RESOLVED:** Not needed. Worktree setup handled by `pre_start` calling pack scripts. Cross-rig work is raw `git worktree` commands in the prompt. | crew |
-| `gc convoy list/check/stranded/create/status` | **OPEN:** Convoys sit in the same space as epics — batch coordination over related beads. Which layer do they belong in? Bead metadata? Molecules? Separate primitive? | deacon-patrol, convoy-feed, convoy-cleanup |
-| `gc context --usage` | **NEEDS IMPL:** New agent API — query session provider for context window utilization. Provider-specific (env var, API, etc.). Prompt decides what to do with the number. | deacon-patrol, refinery-patrol |
-| `gc rig start/stop/park/dock/unpark/undock/restart/reboot/status` | **NEEDS IMPL:** Rig lifecycle management. start/stop (agents up/down), park/unpark (temporary pause — controller skips), dock/undock (permanent disable), status (rig health), restart/reboot (stop+start). | deacon, witness, mayor, crew |
-| ~~`gc crew stop <name>`~~ | **RESOLVED:** Replace with `gc agent suspend <name>` — generic agent suspension, not role-specific. | crew |
+Current `gc` exposes these relevant top-level command families:
 
-### Tier 4: Maintenance
+- City lifecycle: `start`, `stop`, `restart`, `status`, `suspend`, `resume`,
+  `reload`, `register`, `unregister`, `cities`, `supervisor`.
+- Agents/sessions: `agent`, `session`, `runtime`, `hook`, `prime`, `handoff`,
+  `nudge`, `wait`.
+- Work and coordination: `bd`, `formula`, `sling`, `convoy`, `workflow`
+  (deprecated alias for convoy/control operations), `order`, `events`, `event`,
+  `graph`, `mail`.
+- Infrastructure: `rig`, `beads`, `doctor`, `dolt-cleanup`, `dolt-config`,
+  `dolt-state`, `service`, `dashboard`, `shell`, `mcp`, `skill`.
 
-Supporting infrastructure for long-running systems.
+Notable implemented subcommands that were formerly listed as missing:
 
-| Command | Description | Referenced in |
-|---------|-------------|---------------|
-| ~~`gc warrant file <target> --reason "..."`~~ | **RESOLVED:** Just a bead: `bd create --type=warrant --assignee=boot --desc "reason"`. Stuck/stalled detection is prompt-level judgment (ZFC), not controller. | deacon-patrol |
-| ~~`gc compact --dry-run/--verbose/report`~~ | **RESOLVED:** Just bd queries. List expired wisps, promote or delete based on status/labels, send digest via mail. All prompt-level logic. | deacon-patrol |
-| ~~`gc patrol digest --yesterday`~~ | **RESOLVED:** Just bd queries. List yesterday's patrol digest beads, aggregate into permanent bead, delete sources. Prompt-level work. | deacon-patrol |
-| `gc doctor -v / --fix` | **NEEDS IMPL:** System health diagnostics — check city state consistency, stale locks, orphaned sessions, etc. `--fix` for auto-repair. | session-gc, deacon-patrol |
-| ~~`gc costs`~~ | **REMOVED:** Not needed. Provider-specific, already disabled in gastown. | deacon-patrol |
+- `gc hook [agent]` runs the configured `work_query`.
+- `gc sling [target] <bead-or-formula-or-text>` routes work, can instantiate
+  formula wisps, can attach formula wisps with `--on`, and can auto-create
+  convoys.
+- `gc session peek <target> --lines N` replaces the old proposed top-level
+  `gc peek`.
+- `gc session nudge <target> <message...> --delivery immediate|wait-idle|queue`
+  replaces the old proposed top-level `gc nudge`.
+- `gc doctor [-v|--verbose] [--fix]` exists.
+- `gc events --watch [--type ...] [--timeout ...]` exists, along with
+  `--follow`, `--seq`, `--after`, `--after-cursor`, and payload filters.
+- `gc convoy create/list/status/target/add/close/check/stranded/land/delete`
+  exists.
+- `gc order list/show/run/check/history/sweep-tracking` exists and the
+  controller dispatches orders as wisps or exec scripts.
+- `gc mail archive/delete/mark-read/mark-unread/peek/reply/thread/check/count`
+  exists; `gc mail send --notify` exists.
 
-### Tier 5: Extended mail operations
+## Implemented config features
 
-Mail is partially implemented (`gc mail send/inbox/read` exist). Complete the namespace — each is thin sugar over bd, but semantic naming makes prompts clearer.
+These features were previously marked as missing but are now implemented:
 
-| Command | Description | Referenced in |
-|---------|-------------|---------------|
-| `gc mail archive <id>` | **NEEDS IMPL:** Close message bead (remove from inbox). Thin wrapper over `bd close`. | deacon, witness, refinery |
-| `gc mail delete <id>` | **NEEDS IMPL:** Delete message bead. Thin wrapper over `bd delete`. | deacon |
-| `gc mail mark-read <id>` | **NEEDS IMPL:** Label message as read. Thin wrapper over `bd update --label=read`. | mayor |
-| `gc mail hook <id>` | **NEEDS IMPL:** Hook existing mail as assignment. Thin wrapper over `bd update --status=hooked`. | all prompts |
-| `gc mail send --human` | **NEEDS IMPL:** Send to human overseer. Flag for delivery channel (tmux prompt vs inbox). | crew |
-| `gc mail send --notify` | **NEEDS IMPL:** Send with tmux bell notification. Nudge after mail creation. | crew |
+| Feature | Current implementation |
+|---------|------------------------|
+| Custom session naming | `[workspace].session_template` supports Go-template placeholders such as `{{.City}}`, `{{.Agent}}`, `{{.Dir}}`, and `{{.Name}}`. |
+| Pre-start hooks | `[[agent]].pre_start` is parsed, template-expanded, included in runtime fingerprints, and executed before session creation by tmux sessions. K8s embeds pre-start in the pod entrypoint. Some transports intentionally do not execute host-side pre-start. |
+| Prompt template rendering | `prompt_template` files ending in `.template.md` are rendered with Go `text/template`, shared template fragments, injected fragments, frontmatter metadata, and prompt hashes. |
+| Nudge delivery modes | `gc session nudge --delivery immediate|wait-idle|queue` and the deferred `gc nudge` queue commands exist. |
+| Activity feed subscription | `gc events --watch` and `gc events --follow` exist. |
+| Orders | Orders are first-class config under `orders/*.toml`, surfaced through `gc order`, and evaluated by the controller. |
+| Wisps | Gastown uses `gc bd mol wisp`, `gc bd mol burn`, and hidden `gc wisp autoclose` infrastructure. |
 
-## Missing gc features
+## Current Gastown pack shape
 
-Features referenced in prompts/formulas that go beyond individual commands.
+The shipped example is now pack-driven:
 
-| Feature | Description | Referenced in |
-|---------|-------------|---------------|
-| Custom session naming templates | **NEEDS IMPL:** Gas Town uses `{prefix}-{name}` patterns; gc derives `gc-{city}-{agent}`. Allow configurable naming in city.toml. | Implicit in all session references |
-| Pre-start hooks (`needs_pre_sync`) | **NEEDS IMPL:** Generic `pre_start` hook on `[[agent]]` config — run a shell command before agent session starts. Not gastown-specific. | refinery, polecat, crew role configs |
-| Prompt template rendering | **NEEDS IMPL:** Go `text/template` rendering of prompt files. Variables from city/rig/agent config. Already primitive #5 in the architecture. | All 8 prompts |
-| Nudge delivery modes | **OPEN:** Re-review whether mail obviates nudge modes. Future discussion. | witness, deacon, refinery, crew |
-| ~~Event channel system~~ | **RESOLVED:** Merged into single primitive below. | refinery-patrol |
-| ~~Activity feed subscription~~ | **RESOLVED:** Both await-event and await-signal collapse to `gc events --watch [--type=<filter>] [--timeout=<duration>]`. Kubernetes Watch pattern. Blocking mode on existing `gc events` command. Backoff logic stays in prompt (ZFC). | deacon-patrol, witness-patrol, refinery-patrol |
-| ~~Gate system~~ | **RESOLVED:** Gates are beads with metadata (await_type, timeout, waiters). `bd gate list/close/check` already works via `gc bd` passthrough. No gc command needed. | deacon-patrol |
-| ~~Order system~~ | **RESOLVED:** Orders are formulas with trigger frontmatter. Deacon reads order dir, checks trigger conditions (filesystem + state.json), executes if open. No gt/gc/bd order commands — all prompt-level. Spec §16 is Tutorial 05c territory. | deacon-patrol |
-| ~~Wisp lifecycle~~ | **RESOLVED:** Squash inlined to raw bd: `bd close "$MOL_ID"` + `bd create --type=digest --title="<summary>"`. Closing the root detaches from hook. Step children closed via `bd close`. Await-signal/await-event replaced by `gc events --watch` + prompt-level backoff. Full `gc mol` namespace removed — use `bd mol` directly. | deacon, witness, refinery |
-| ~~Agent bead protocol~~ | **RESOLVED:** Just bd operations. Agent bead is a bead with `type=agent` + labels (`idle:N`, `backoff-until:TIMESTAMP`). Liveness = "when was bead last updated." All via `bd update --label` and `bd show`. | witness-patrol, deacon-patrol |
+- `examples/gastown/pack.toml` imports `packs/gastown` and uses it as the
+  default rig import.
+- `packs/gastown` imports `packs/maintenance`.
+- City-scoped configured named sessions: mayor, deacon, boot.
+- Rig-scoped configured named sessions: witness always-on, refinery on-demand.
+- Rig-scoped pool agent: polecat, with `pre_start` worktree setup and
+  `max_active_sessions = 5`.
+- City-scoped pool utility: dog, supplied by maintenance and patched by
+  Gastown.
+- Maintenance orders handle mechanical sweeps such as gates, orphan cleanup,
+  branch pruning, spawn-storm detection, wisp compaction, and JSONL/reaper
+  jobs.
 
-## What exists today
+## Resolved replacements
 
-gc commands currently implemented (as of this writing):
+These old Gastown-style command families should stay out of Go unless a new
+first-principles need appears.
 
-- `gc start` / `gc stop` / `gc init`
-- `gc rig add` / `gc rig list`
-- `gc agent add/suspend/resume` + `gc session list/attach/peek/kill/logs` + `gc runtime drain/undrain/drain-check/drain-ack`
-- `gc mail send/inbox/read`
-- `gc formula list/show`
-- `gc events`
-- `gc version`
+| Old idea | Current route |
+|----------|---------------|
+| Role-specific `gc polecat ...`, `gc dog ...`, `gc boot ...`, `gc mayor ...`, `gc deacon ...` | Generic session, rig, runtime, mail, bd, convoy, and order commands. |
+| `gc done` | Push branch, update bead metadata/status, route to refinery when needed, `gc runtime drain-ack`. |
+| `gc escalate` | `gc mail send <target> -s "ESCALATION: ..."` plus durable bead metadata when needed. |
+| `gc mq ...` | Merge-request beads, refinery prompt/formula workflow, git operations, and bead metadata. |
+| `gc warrant file ...` | `gc bd create --type=task --label=warrant --metadata ...` routed to dog. |
+| `gc compact`, `gc patrol digest` | `bd`/`gc bd` queries plus maintenance orders and scripts. |
+| `gc worktree ...` | Agent `pre_start` scripts and raw `git worktree` operations in prompts. |
+| `gc feed ...` | `gc events --since ...`, `gc events --watch`, or `gc events --follow`. |
+| `gc costs` | Removed; provider-specific and not a Gas City SDK primitive. |
 
-## Deprecated formulas
+## Remaining statistics
 
-Formulas superseded by the assignee + pool auto-scaling model.
+Approximate current gap count:
 
-| Formula | Reason |
-|---------|--------|
-| `mol-convoy-feed` | Pool auto-scaling replaces manual dispatch. Agents spawn when `bd ready --assignee=<role>` has work. |
-| `mol-convoy-cleanup` | bd on_close hook triggers `gc convoy autoclose` reactively; no polling needed. |
-| `mol-convoy-check` | Superseded by bd on_close hook → `gc convoy autoclose`. Removed. |
-
-## Statistics
-
-- **Total gt commands referenced in prompts/formulas:** ~75 unique subcommands
-- **Resolved (just bd / already exists / controller / not needed):** ~55
-- **Needs implementation in gc SDK:** ~15 commands + 5 features
-- **Open design questions:** 2 (convoys, nudge delivery modes)
+- SDK command gaps still worth considering: 1-3 (`gc context --usage`,
+  maybe `gc mail hook`, maybe `gc mail send --human`).
+- Implemented but prompt/doc cleanup needed: rig lifecycle wording, stale
+  `SDK-ROADMAP.md`.
+- Open primitive-design questions from the old file: none. Convoys, orders,
+  events, prompt rendering, pre-start hooks, and nudge delivery all have
+  current implementations.
