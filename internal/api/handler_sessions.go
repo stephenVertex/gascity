@@ -58,9 +58,8 @@ type sessionResponse struct {
 	// [[named_session]] configuration.
 	ConfiguredNamedSession bool `json:"configured_named_session,omitempty"`
 
-	Capabilities sessionCapabilities `json:"capabilities"`
-
-	ModeVersion uint64 `json:"mode_version,omitempty"`
+	Capabilities sessionCapabilities  `json:"capabilities"`
+	Runtime      *sessionRuntimeState `json:"runtime,omitempty"`
 
 	// Options contains the effective per-session option overrides from
 	// template_overrides bead metadata (e.g., {"permission_mode":"unrestricted"}).
@@ -68,6 +67,11 @@ type sessionResponse struct {
 
 	// Metadata exposes real_world_app_-prefixed bead metadata for external consumers.
 	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+type sessionRuntimeState struct {
+	PermissionMode runtime.PermissionMode `json:"permission_mode,omitempty" enum:"default,acceptEdits,plan,bypassPermissions" doc:"Canonical live runtime permission mode when known."`
+	ModeVersion    uint64                 `json:"mode_version,omitempty" doc:"Monotonically increasing live runtime permission mode version when known."`
 }
 
 type sessionResponseHandle interface {
@@ -120,8 +124,8 @@ func sessionToResponse(info session.Info, cfg *config.City) sessionResponse {
 func sessionResponseWithReason(info session.Info, b *beads.Bead, cfg *config.City, hasDeferredQueue bool) sessionResponse {
 	r := sessionToResponse(info, cfg)
 	// Expose effective options: provider EffectiveDefaults merged with
-	// per-session template_overrides. The dashboard uses this to display
-	// the actual permission mode and other settings.
+	// per-session template_overrides. Values stay in the provider's option
+	// schema; live runtime state is exposed separately.
 	if b != nil && cfg != nil {
 		rp, _ := resolveProviderForSessionResponse(info, cfg)
 		if rp != nil && len(rp.EffectiveDefaults) > 0 {

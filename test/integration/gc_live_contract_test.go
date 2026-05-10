@@ -715,20 +715,20 @@ func TestGCLiveContract_LiveClaudePermissionModeEndpoint(t *testing.T) {
 	if !initial.Capabilities.PermissionMode.Supported || !initial.Capabilities.PermissionMode.Readable || !initial.Capabilities.PermissionMode.LiveSwitch {
 		t.Fatalf("initial live permission capability = %+v, want supported readable live_switch", initial.Capabilities.PermissionMode)
 	}
-	if got := initial.Options[permissionModeJSONKey()]; got != "bypassPermissions" {
-		t.Fatalf("initial live permission mode = %q, want bypassPermissions", got)
+	if got := initial.Options[permissionModeJSONKey()]; got != "unrestricted" {
+		t.Fatalf("initial options.permission_mode = %q, want schema-backed unrestricted", got)
 	}
 	for _, mode := range []string{"default", "acceptEdits", "plan", "bypassPermissions"} {
 		if !stringListContains(initial.Capabilities.PermissionMode.Values, mode) {
 			t.Fatalf("initial live permission values = %v, want %s", initial.Capabilities.PermissionMode.Values, mode)
 		}
 	}
-	assertLiveContractPermissionModeSurfaces(t, baseURL, validator, cityBase, sessionPath, sessionID, "bypassPermissions", initial.ModeVersion, 20*time.Second)
+	assertLiveContractPermissionModeSurfaces(t, baseURL, validator, cityBase, sessionPath, sessionID, "bypassPermissions", "unrestricted", initial.Runtime.ModeVersion, 20*time.Second)
 
-	previousVersion := initial.ModeVersion
+	previousVersion := initial.Runtime.ModeVersion
 	for _, mode := range []string{"acceptEdits", "plan", "default", "bypassPermissions"} {
 		updated := switchLiveContractPermissionMode(t, baseURL, validator, cityBase, sessionPath, sessionID, mode, previousVersion, mode == "acceptEdits" || mode == "plan", 60*time.Second)
-		assertLiveContractPermissionModeSurfaces(t, baseURL, validator, cityBase, sessionPath, sessionID, mode, updated.ModeVersion, 20*time.Second)
+		assertLiveContractPermissionModeSurfaces(t, baseURL, validator, cityBase, sessionPath, sessionID, mode, "unrestricted", updated.ModeVersion, 20*time.Second)
 		previousVersion = updated.ModeVersion
 	}
 
@@ -776,9 +776,12 @@ type contractPermissionModeCapability struct {
 }
 
 type contractSessionPermissionResponse struct {
-	ID           string            `json:"id"`
-	Options      map[string]string `json:"options"`
-	ModeVersion  uint64            `json:"mode_version"`
+	ID      string            `json:"id"`
+	Options map[string]string `json:"options"`
+	Runtime struct {
+		PermissionMode string `json:"permission_mode"`
+		ModeVersion    uint64 `json:"mode_version"`
+	} `json:"runtime"`
 	Capabilities struct {
 		PermissionMode contractPermissionModeCapability `json:"permission_mode"`
 	} `json:"capabilities"`
@@ -2042,7 +2045,7 @@ func waitForLiveContractPermissionMode(t *testing.T, baseURL string, v openapiva
 	var last contractSessionPermissionResponse
 	for time.Now().Before(deadline) {
 		last = liveContractJSON[contractSessionPermissionResponse](t, baseURL, v, http.MethodGet, sessionPath, nil, http.StatusOK)
-		if last.Options[permissionModeJSONKey()] == want && last.Capabilities.PermissionMode.Supported && last.Capabilities.PermissionMode.Readable {
+		if last.Runtime.PermissionMode == want && last.Capabilities.PermissionMode.Supported && last.Capabilities.PermissionMode.Readable {
 			return last
 		}
 		time.Sleep(250 * time.Millisecond)
@@ -2080,19 +2083,22 @@ func switchLiveContractPermissionMode(t *testing.T, baseURL string, v openapival
 	return updated
 }
 
-func assertLiveContractPermissionModeSurfaces(t *testing.T, baseURL string, v openapivalidator.Validator, cityBase, sessionPath, sessionID, want string, version uint64, timeout time.Duration) contractSessionPermissionResponse {
+func assertLiveContractPermissionModeSurfaces(t *testing.T, baseURL string, v openapivalidator.Validator, cityBase, sessionPath, sessionID, wantRuntimeMode, wantOptionMode string, version uint64, timeout time.Duration) contractSessionPermissionResponse {
 	t.Helper()
-	detail := waitForLiveContractPermissionMode(t, baseURL, v, sessionPath, want, timeout)
-	if detail.ModeVersion != version {
-		t.Fatalf("session detail mode_version = %d, want %d for %s", detail.ModeVersion, version, want)
+	detail := waitForLiveContractPermissionMode(t, baseURL, v, sessionPath, wantRuntimeMode, timeout)
+	if got := detail.Options[permissionModeJSONKey()]; got != wantOptionMode {
+		t.Fatalf("session detail options.permission_mode = %q, want schema-backed %q", got, wantOptionMode)
+	}
+	if detail.Runtime.ModeVersion != version {
+		t.Fatalf("session detail runtime.mode_version = %d, want %d for %s", detail.Runtime.ModeVersion, version, wantRuntimeMode)
 	}
 	list := liveContractJSON[struct {
 		Items []contractSessionPermissionResponse `json:"items"`
 	}](t, baseURL, v, http.MethodGet, cityBase+"/sessions?limit=100", nil, http.StatusOK)
-	assertLiveContractSessionListMode(t, list.Items, sessionID, want, version)
+	assertLiveContractSessionListMode(t, list.Items, sessionID, wantRuntimeMode, wantOptionMode, version)
 	stream := readLiveContractSessionStreamMessage(t, baseURL, sessionPath+"/stream?format=raw", timeout)
-	if stream.PermissionMode != want || stream.ModeVersion != version {
-		t.Fatalf("session stream event = %s, want %s version %d", stream.Raw, want, version)
+	if stream.PermissionMode != wantRuntimeMode || stream.ModeVersion != version {
+		t.Fatalf("session stream event = %s, want %s version %d", stream.Raw, wantRuntimeMode, version)
 	}
 	return detail
 }
@@ -2112,17 +2118,20 @@ func waitForLiveContractUnsupportedPermissionMode(t *testing.T, baseURL string, 
 	return contractSessionPermissionResponse{}
 }
 
-func assertLiveContractSessionListMode(t *testing.T, items []contractSessionPermissionResponse, sessionID, wantMode string, wantVersion uint64) {
+func assertLiveContractSessionListMode(t *testing.T, items []contractSessionPermissionResponse, sessionID, wantRuntimeMode, wantOptionMode string, wantVersion uint64) {
 	t.Helper()
 	for _, item := range items {
 		if item.ID != sessionID {
 			continue
 		}
-		if got := item.Options[permissionModeJSONKey()]; got != wantMode {
-			t.Fatalf("session list permission_mode = %q, want %q; item=%+v", got, wantMode, item)
+		if got := item.Options[permissionModeJSONKey()]; got != wantOptionMode {
+			t.Fatalf("session list options.permission_mode = %q, want schema-backed %q; item=%+v", got, wantOptionMode, item)
 		}
-		if item.ModeVersion != wantVersion {
-			t.Fatalf("session list mode_version = %d, want %d; item=%+v", item.ModeVersion, wantVersion, item)
+		if got := item.Runtime.PermissionMode; got != wantRuntimeMode {
+			t.Fatalf("session list runtime.permission_mode = %q, want %q; item=%+v", got, wantRuntimeMode, item)
+		}
+		if item.Runtime.ModeVersion != wantVersion {
+			t.Fatalf("session list runtime.mode_version = %d, want %d; item=%+v", item.Runtime.ModeVersion, wantVersion, item)
 		}
 		return
 	}

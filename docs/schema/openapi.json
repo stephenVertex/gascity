@@ -5994,11 +5994,6 @@
             },
             "type": "object"
           },
-          "mode_version": {
-            "format": "int64",
-            "minimum": 0,
-            "type": "integer"
-          },
           "model": {
             "type": "string"
           },
@@ -6022,6 +6017,9 @@
           },
           "running": {
             "type": "boolean"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/SessionRuntimeState"
           },
           "session_name": {
             "type": "string"
@@ -6051,6 +6049,28 @@
           "running",
           "capabilities"
         ],
+        "type": "object"
+      },
+      "SessionRuntimeState": {
+        "additionalProperties": false,
+        "properties": {
+          "mode_version": {
+            "description": "Monotonically increasing live runtime permission mode version when known.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "permission_mode": {
+            "description": "Canonical live runtime permission mode when known.",
+            "enum": [
+              "default",
+              "acceptEdits",
+              "plan",
+              "bypassPermissions"
+            ],
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "SessionStreamCommonEvent": {
@@ -6274,13 +6294,13 @@
             "minimum": 0,
             "type": "integer"
           },
-          "options": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object"
-          },
           "permission_mode": {
+            "enum": [
+              "default",
+              "acceptEdits",
+              "plan",
+              "bypassPermissions"
+            ],
             "type": "string"
           },
           "provider": {

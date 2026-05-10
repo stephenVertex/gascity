@@ -3795,8 +3795,6 @@ export interface components {
             metadata?: {
                 [key: string]: string;
             };
-            /** Format: int64 */
-            mode_version?: number;
             model?: string;
             options?: {
                 [key: string]: string;
@@ -3806,11 +3804,24 @@ export interface components {
             reason?: string;
             rig?: string;
             running: boolean;
+            runtime?: components["schemas"]["SessionRuntimeState"];
             session_name: string;
             state: string;
             submission_capabilities?: components["schemas"]["SubmissionCapabilities"];
             template: string;
             title: string;
+        };
+        SessionRuntimeState: {
+            /**
+             * Format: int64
+             * @description Monotonically increasing live runtime permission mode version when known.
+             */
+            mode_version?: number;
+            /**
+             * @description Canonical live runtime permission mode when known.
+             * @enum {string}
+             */
+            permission_mode?: "default" | "acceptEdits" | "plan" | "bypassPermissions";
         };
         /**
          * Session stream lifecycle event
@@ -3885,10 +3896,8 @@ export interface components {
         SessionUpdatedPayload: {
             /** Format: int64 */
             mode_version?: number;
-            options?: {
-                [key: string]: string;
-            };
-            permission_mode?: string;
+            /** @enum {string} */
+            permission_mode?: "default" | "acceptEdits" | "plan" | "bypassPermissions";
             provider?: string;
             session_id?: string;
             session_name?: string;

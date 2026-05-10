@@ -375,6 +375,307 @@ func TestFakeMetaBroken(t *testing.T) {
 	}
 }
 
+func TestFakePermissionModeStateReadAndCapability(t *testing.T) {
+	f := NewFake()
+	if err := f.Start(context.Background(), "session-a", Config{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	f.SetPermissionModeState("session-a", PermissionModeState{
+		Mode:    PermissionModeDefault,
+		Version: 7,
+	})
+
+	capability := f.PermissionModeCapability("session-a", "claude")
+	if !capability.Supported || !capability.Readable || !capability.LiveSwitch {
+		t.Fatalf("PermissionModeCapability = %+v, want fully supported", capability)
+	}
+	if len(capability.Values) != len(CanonicalPermissionModes()) {
+		t.Fatalf("PermissionModeCapability.Values = %v, want canonical values", capability.Values)
+	}
+	capability.Values[0] = PermissionMode("mutated")
+	if fresh := f.PermissionModeCapability("session-a", "claude").Values[0]; fresh != PermissionModeDefault {
+		t.Fatalf("PermissionModeCapability returned shared values; got %q", fresh)
+	}
+
+	state, err := f.PermissionMode(context.Background(), "session-a", "claude")
+	if err != nil {
+		t.Fatalf("PermissionMode: %v", err)
+	}
+	if state.Mode != PermissionModeDefault || state.Version != 7 || !state.Verified {
+		t.Fatalf("PermissionMode = %+v, want default version 7 verified", state)
+	}
+}
+
+func TestFakePermissionModeUnsupportedAndReadErrors(t *testing.T) {
+	f := NewFake()
+	if capability := f.PermissionModeCapability("missing", "claude"); capability.Supported || capability.Reason == "" {
+		t.Fatalf("missing capability = %+v, want unsupported reason", capability)
+	}
+	if _, err := f.PermissionMode(context.Background(), "missing", "claude"); !errors.Is(err, ErrPermissionModeUnsupported) {
+		t.Fatalf("PermissionMode missing error = %v, want %v", err, ErrPermissionModeUnsupported)
+	}
+
+	readErr := errors.New("read failed")
+	f.PermissionModeReadErrors["session-a"] = readErr
+	if capability := f.PermissionModeCapability("session-a", "claude"); capability.Reason != readErr.Error() {
+		t.Fatalf("read error capability = %+v, want reason %q", capability, readErr.Error())
+	}
+	if _, err := f.PermissionMode(context.Background(), "session-a", "claude"); !errors.Is(err, readErr) {
+		t.Fatalf("PermissionMode read error = %v, want %v", err, readErr)
+	}
+
+	delete(f.PermissionModeReadErrors, "session-a")
+	f.SetPermissionModeState("session-a", PermissionModeState{Mode: PermissionModePlan})
+	f.SetPermissionModeCapability("session-a", PermissionModeCapability{Supported: true, Readable: false})
+	if _, err := f.PermissionMode(context.Background(), "session-a", "claude"); !errors.Is(err, ErrPermissionModeUnsupported) {
+		t.Fatalf("PermissionMode unreadable error = %v, want %v", err, ErrPermissionModeUnsupported)
+	}
+}
+
+func TestFakeSetPermissionModeRequiresRunningSession(t *testing.T) {
+	f := NewFake()
+	_, err := f.SetPermissionMode(context.Background(), "missing", "claude", PermissionModeAcceptEdits)
+	if !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("SetPermissionMode missing error = %v, want %v", err, ErrSessionNotFound)
+	}
+}
+
+func TestFakeSetPermissionModeUpdatesModeAndVersion(t *testing.T) {
+	f := NewFake()
+	if err := f.Start(context.Background(), "session-a", Config{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	f.SetPermissionModeState("session-a", PermissionModeState{
+		Mode:    PermissionModeDefault,
+		Version: 3,
+	})
+
+	state, err := f.SetPermissionMode(context.Background(), "session-a", "claude", PermissionModeAcceptEdits)
+	if err != nil {
+		t.Fatalf("SetPermissionMode: %v", err)
+	}
+	if state.Mode != PermissionModeAcceptEdits || state.Version != 4 || !state.Verified {
+		t.Fatalf("SetPermissionMode = %+v, want acceptEdits version 4 verified", state)
+	}
+	read, err := f.PermissionMode(context.Background(), "session-a", "claude")
+	if err != nil {
+		t.Fatalf("PermissionMode after set: %v", err)
+	}
+	if read.Mode != PermissionModeAcceptEdits || read.Version != 4 {
+		t.Fatalf("PermissionMode after set = %+v, want acceptEdits version 4", read)
+	}
+}
+
+func TestFakeSetPermissionModeErrors(t *testing.T) {
+	f := NewFake()
+	if err := f.Start(context.Background(), "session-a", Config{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	f.SetPermissionModeState("session-a", PermissionModeState{Mode: PermissionModeDefault})
+
+	setErr := errors.New("set failed")
+	f.PermissionModeSetErrors["session-a"] = setErr
+	if _, err := f.SetPermissionMode(context.Background(), "session-a", "claude", PermissionModePlan); !errors.Is(err, setErr) {
+		t.Fatalf("SetPermissionMode set error = %v, want %v", err, setErr)
+	}
+
+	delete(f.PermissionModeSetErrors, "session-a")
+	f.SetPermissionModeCapability("session-a", PermissionModeCapability{Supported: false})
+	if _, err := f.SetPermissionMode(context.Background(), "session-a", "claude", PermissionModePlan); !errors.Is(err, ErrPermissionModeUnsupported) {
+		t.Fatalf("SetPermissionMode unsupported error = %v, want %v", err, ErrPermissionModeUnsupported)
+	}
+
+	f.SetPermissionModeCapability("session-a", PermissionModeCapability{Supported: true, LiveSwitch: false})
+	if _, err := f.SetPermissionMode(context.Background(), "session-a", "claude", PermissionModePlan); !errors.Is(err, ErrPermissionModeSwitchUnsupported) {
+		t.Fatalf("SetPermissionMode live switch error = %v, want %v", err, ErrPermissionModeSwitchUnsupported)
+	}
+}
+
+func TestFakeSetPermissionModeWithoutConfiguredStateIsUnsupported(t *testing.T) {
+	f := NewFake()
+	if err := f.Start(context.Background(), "session-a", Config{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := f.SetPermissionMode(context.Background(), "session-a", "claude", PermissionModePlan); !errors.Is(err, ErrPermissionModeUnsupported) {
+		t.Fatalf("SetPermissionMode without state error = %v, want %v", err, ErrPermissionModeUnsupported)
+	}
+}
+
+func TestFakePermissionModeZeroValueMapInitialization(t *testing.T) {
+	stateful := &Fake{}
+	stateful.SetPermissionModeState("session-a", PermissionModeState{
+		Mode:    PermissionModeDefault,
+		Version: 2,
+	})
+	if stateful.PermissionModes["session-a"] != PermissionModeDefault {
+		t.Fatalf("zero-value SetPermissionModeState mode = %q, want default", stateful.PermissionModes["session-a"])
+	}
+	if stateful.PermissionModeVersions["session-a"] != 2 {
+		t.Fatalf("zero-value SetPermissionModeState version = %d, want 2", stateful.PermissionModeVersions["session-a"])
+	}
+	if capability := stateful.PermissionModeCaps["session-a"]; !capability.Supported || !capability.LiveSwitch {
+		t.Fatalf("zero-value SetPermissionModeState capability = %+v, want supported live switch", capability)
+	}
+
+	capabilityOnly := &Fake{}
+	capabilityOnly.SetPermissionModeCapability("session-a", PermissionModeCapability{Supported: true})
+	if !capabilityOnly.PermissionModeCaps["session-a"].Supported {
+		t.Fatal("zero-value SetPermissionModeCapability did not initialize capability map")
+	}
+
+	capabilityFromMode := &Fake{PermissionModes: map[string]PermissionMode{"session-a": PermissionModePlan}}
+	capability := capabilityFromMode.PermissionModeCapability("session-a", "claude")
+	if !capability.Supported || !capability.Readable || !capability.LiveSwitch {
+		t.Fatalf("PermissionModeCapability from configured mode = %+v, want supported", capability)
+	}
+
+	switcher := &Fake{
+		sessions: map[string]Config{"session-a": {}},
+		PermissionModeCaps: map[string]PermissionModeCapability{
+			"session-a": {Supported: true, LiveSwitch: true},
+		},
+	}
+	switched, err := switcher.SetPermissionMode(context.Background(), "session-a", "claude", PermissionModeAcceptEdits)
+	if err != nil {
+		t.Fatalf("zero-value SetPermissionMode: %v", err)
+	}
+	if switched.Mode != PermissionModeAcceptEdits || switched.Version != 1 || !switched.Verified {
+		t.Fatalf("zero-value SetPermissionMode = %+v, want acceptEdits version 1 verified", switched)
+	}
+
+	statefulSwitcher := &Fake{sessions: map[string]Config{"session-a": {}}}
+	fromState, err := statefulSwitcher.SetPermissionModeFromState(
+		context.Background(),
+		"session-a",
+		"claude",
+		PermissionModeDefault,
+		PermissionModeBypassPermissions,
+	)
+	if err != nil {
+		t.Fatalf("zero-value SetPermissionModeFromState: %v", err)
+	}
+	if fromState.Mode != PermissionModeBypassPermissions || fromState.Version != 1 || fromState.Verified {
+		t.Fatalf("zero-value SetPermissionModeFromState = %+v, want bypassPermissions version 1 unverified", fromState)
+	}
+}
+
+func TestFakePermissionModeCapabilityForState(t *testing.T) {
+	f := NewFake()
+	if capability := f.PermissionModeCapabilityForState("missing", "claude", PermissionModeDefault); capability.Supported || capability.Reason == "" {
+		t.Fatalf("missing stateful capability = %+v, want unsupported reason", capability)
+	}
+
+	if err := f.Start(context.Background(), "session-a", Config{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	capability := f.PermissionModeCapabilityForState("session-a", "claude", PermissionModeDefault)
+	if !capability.Supported || !capability.Readable || !capability.LiveSwitch {
+		t.Fatalf("PermissionModeCapabilityForState = %+v, want supported", capability)
+	}
+	if len(capability.Values) != len(CanonicalPermissionModes()) {
+		t.Fatalf("PermissionModeCapabilityForState.Values = %v, want canonical values", capability.Values)
+	}
+
+	f.SetPermissionModeCapability("session-a", PermissionModeCapability{Supported: true, LiveSwitch: false, Reason: "read only"})
+	if capability := f.PermissionModeCapabilityForState("session-a", "claude", PermissionModeDefault); capability.LiveSwitch || capability.Reason != "read only" {
+		t.Fatalf("read-only stateful capability = %+v, want live switch false with reason", capability)
+	}
+
+	delete(f.PermissionModeCaps, "session-a")
+	if capability := f.PermissionModeCapabilityForState("session-a", "claude", PermissionMode("unknown")); capability.Supported || capability.Reason == "" {
+		t.Fatalf("unknown current capability = %+v, want unsupported reason", capability)
+	}
+}
+
+func TestFakeSetPermissionModeFromStateUpdatesUnverified(t *testing.T) {
+	f := NewFake()
+	if err := f.Start(context.Background(), "session-a", Config{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	state, err := f.SetPermissionModeFromState(
+		context.Background(),
+		"session-a",
+		"claude",
+		PermissionModeDefault,
+		PermissionModePlan,
+	)
+	if err != nil {
+		t.Fatalf("SetPermissionModeFromState: %v", err)
+	}
+	if state.Mode != PermissionModePlan || state.Version != 1 || state.Verified {
+		t.Fatalf("SetPermissionModeFromState = %+v, want plan version 1 unverified", state)
+	}
+}
+
+func TestFakeSetPermissionModeFromStateErrors(t *testing.T) {
+	f := NewFake()
+	if _, err := f.SetPermissionModeFromState(context.Background(), "missing", "claude", PermissionModeDefault, PermissionModePlan); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("SetPermissionModeFromState missing error = %v, want %v", err, ErrSessionNotFound)
+	}
+	if err := f.Start(context.Background(), "session-a", Config{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	setErr := errors.New("stateful set failed")
+	f.PermissionModeSetErrors["session-a"] = setErr
+	if _, err := f.SetPermissionModeFromState(context.Background(), "session-a", "claude", PermissionModeDefault, PermissionModePlan); !errors.Is(err, setErr) {
+		t.Fatalf("SetPermissionModeFromState set error = %v, want %v", err, setErr)
+	}
+
+	delete(f.PermissionModeSetErrors, "session-a")
+	f.SetPermissionModeCapability("session-a", PermissionModeCapability{Supported: false})
+	if _, err := f.SetPermissionModeFromState(context.Background(), "session-a", "claude", PermissionModeDefault, PermissionModePlan); !errors.Is(err, ErrPermissionModeUnsupported) {
+		t.Fatalf("SetPermissionModeFromState unsupported error = %v, want %v", err, ErrPermissionModeUnsupported)
+	}
+
+	f.SetPermissionModeCapability("session-a", PermissionModeCapability{Supported: true, LiveSwitch: false})
+	if _, err := f.SetPermissionModeFromState(context.Background(), "session-a", "claude", PermissionModeDefault, PermissionModePlan); !errors.Is(err, ErrPermissionModeSwitchUnsupported) {
+		t.Fatalf("SetPermissionModeFromState live switch error = %v, want %v", err, ErrPermissionModeSwitchUnsupported)
+	}
+
+	delete(f.PermissionModeCaps, "session-a")
+	if _, err := f.SetPermissionModeFromState(context.Background(), "session-a", "claude", PermissionMode("unknown"), PermissionModePlan); !errors.Is(err, ErrPermissionModeSwitchUnsupported) {
+		t.Fatalf("SetPermissionModeFromState unknown current error = %v, want %v", err, ErrPermissionModeSwitchUnsupported)
+	}
+}
+
+func TestFailFakePermissionModeOperationsFailAndRecordCalls(t *testing.T) {
+	f := NewFailFake()
+
+	if capability := f.PermissionModeCapability("session-a", "claude"); capability.Supported || capability.Reason == "" {
+		t.Fatalf("broken PermissionModeCapability = %+v, want unsupported reason", capability)
+	}
+	if _, err := f.PermissionMode(context.Background(), "session-a", "claude"); err == nil {
+		t.Fatal("PermissionMode on broken fake succeeded, want error")
+	}
+	if _, err := f.SetPermissionMode(context.Background(), "session-a", "claude", PermissionModePlan); err == nil {
+		t.Fatal("SetPermissionMode on broken fake succeeded, want error")
+	}
+	if capability := f.PermissionModeCapabilityForState("session-a", "claude", PermissionModeDefault); capability.Supported || capability.Reason == "" {
+		t.Fatalf("broken PermissionModeCapabilityForState = %+v, want unsupported reason", capability)
+	}
+	if _, err := f.SetPermissionModeFromState(context.Background(), "session-a", "claude", PermissionModeDefault, PermissionModePlan); err == nil {
+		t.Fatal("SetPermissionModeFromState on broken fake succeeded, want error")
+	}
+
+	want := []string{
+		"PermissionModeCapability",
+		"PermissionMode",
+		"SetPermissionMode",
+		"PermissionModeCapabilityForState",
+		"SetPermissionModeFromState",
+	}
+	if len(f.Calls) != len(want) {
+		t.Fatalf("recorded calls = %v, want %v", f.Calls, want)
+	}
+	for i, method := range want {
+		if f.Calls[i].Method != method {
+			t.Fatalf("call %d method = %q, want %q", i, f.Calls[i].Method, method)
+		}
+	}
+}
+
 func TestTextContent(t *testing.T) {
 	blocks := TextContent("hello")
 	if len(blocks) != 1 {

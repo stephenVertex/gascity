@@ -70,12 +70,6 @@ make test-integration-shards-parallel
 make test-local-full-parallel
 ```
 
-The broad integration runners skip the long live formula workflow tests by
-default. Set `TEST_LIVE_FORMULAS=1` to include them in
-`make test-integration-shards`, `make test-integration-shards-parallel`, or
-`make test-local-full-parallel`. The explicit `make
-test-integration-review-formulas` target still runs those workflows directly.
-
 On large local machines, tune parallelism explicitly:
 
 ```bash
@@ -93,7 +87,7 @@ For integration buckets, use the named shard runner:
 
 ```bash
 ./scripts/test-integration-shard packages-cmd-gc-3-of-6
-./scripts/test-integration-shard review-formulas-retries-1-of-2
+./scripts/test-integration-shard review-formulas-retries
 ./scripts/test-integration-shard rest-full-4-of-8
 ```
 

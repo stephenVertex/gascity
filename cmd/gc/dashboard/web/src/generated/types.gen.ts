@@ -2502,7 +2502,6 @@ export type SessionResponse = {
     metadata?: {
         [key: string]: string;
     };
-    mode_version?: number;
     model?: string;
     options?: {
         [key: string]: string;
@@ -2512,11 +2511,23 @@ export type SessionResponse = {
     reason?: string;
     rig?: string;
     running: boolean;
+    runtime?: SessionRuntimeState;
     session_name: string;
     state: string;
     submission_capabilities?: SubmissionCapabilities;
     template: string;
     title: string;
+};
+
+export type SessionRuntimeState = {
+    /**
+     * Monotonically increasing live runtime permission mode version when known.
+     */
+    mode_version?: number;
+    /**
+     * Canonical live runtime permission mode when known.
+     */
+    permission_mode?: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
 };
 
 /**
@@ -2623,10 +2634,7 @@ export type SessionTranscriptGetResponse = {
 
 export type SessionUpdatedPayload = {
     mode_version?: number;
-    options?: {
-        [key: string]: string;
-    };
-    permission_mode?: string;
+    permission_mode?: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
     provider?: string;
     session_id?: string;
     session_name?: string;

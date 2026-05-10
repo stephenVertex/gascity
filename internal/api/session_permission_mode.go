@@ -3,17 +3,11 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
-	"log"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/danielgtaylor/huma/v2"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
-	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/internal/session"
 )
@@ -39,12 +33,11 @@ type sessionPermissionModeCapability struct {
 
 // SessionUpdatedPayload is emitted when mutable session state changes.
 type SessionUpdatedPayload struct {
-	SessionID      string            `json:"session_id,omitempty"`
-	SessionName    string            `json:"session_name,omitempty"`
-	Provider       string            `json:"provider,omitempty"`
-	PermissionMode string            `json:"permission_mode,omitempty"`
-	ModeVersion    uint64            `json:"mode_version,omitempty"`
-	Options        map[string]string `json:"options,omitempty"`
+	SessionID      string                 `json:"session_id,omitempty"`
+	SessionName    string                 `json:"session_name,omitempty"`
+	Provider       string                 `json:"provider,omitempty"`
+	PermissionMode runtime.PermissionMode `json:"permission_mode,omitempty" enum:"default,acceptEdits,plan,bypassPermissions"`
+	ModeVersion    uint64                 `json:"mode_version,omitempty"`
 }
 
 // IsEventPayload marks SessionUpdatedPayload as an events.Payload variant.
@@ -60,10 +53,10 @@ func applyConfiguredPermissionMode(resp *sessionResponse, b *beads.Bead) {
 	}
 	if resp.Options != nil {
 		if mode, ok := runtime.NormalizePermissionMode(resp.Options[permissionModeOptionKey]); ok {
-			setResponsePermissionMode(resp, mode, 0)
+			setResponseRuntimePermissionMode(resp, mode, 0)
 			resp.Capabilities.PermissionMode = sessionPermissionModeCapability{
 				Supported: true,
-				Values:    stringPermissionModes(runtime.CanonicalPermissionModes()),
+				Values:    []string{string(mode)},
 				Reason:    "permission mode is configured at launch only",
 			}
 		}
@@ -71,9 +64,8 @@ func applyConfiguredPermissionMode(resp *sessionResponse, b *beads.Bead) {
 	if b == nil {
 		return
 	}
-	if mode, ok := runtime.NormalizePermissionMode(b.Metadata[permissionModeMetadataKey]); ok {
-		version, _ := parseModeVersion(b.Metadata[permissionModeVersionMetadataKey])
-		setResponsePermissionMode(resp, mode, version)
+	if mode, version, ok, _ := permissionModeFromBead(b); ok {
+		setResponseRuntimePermissionMode(resp, mode, version)
 	}
 }
 
@@ -81,6 +73,7 @@ func (s *Server) enrichLivePermissionModeFromBead(resp *sessionResponse, info se
 	if resp == nil || s == nil || s.state == nil || strings.TrimSpace(info.SessionName) == "" {
 		return
 	}
+	_, _ = s.permissionModeStore().LoadStoredFromBead(info.ID, b)
 	reader, ok := s.state.SessionProvider().(runtime.PermissionModeReader)
 	if !ok {
 		return
@@ -88,18 +81,9 @@ func (s *Server) enrichLivePermissionModeFromBead(resp *sessionResponse, info se
 	knownMode, knownVersion, knownModeState := responsePermissionMode(resp)
 	configuredCapability := resp.Capabilities.PermissionMode
 	provider := s.permissionModeRuntimeProviderFromBead(info, b)
-	capability := reader.PermissionModeCapability(info.SessionName, provider)
-	usedStatefulCapability := false
-	if (!capability.Supported || !capability.Readable) && info.State == session.StateActive && knownModeState {
-		if stateful, ok := reader.(runtime.PermissionModeStatefulSwitcher); ok {
-			fallback := stateful.PermissionModeCapabilityForState(info.SessionName, provider, knownMode)
-			if fallback.Supported {
-				capability = fallback
-				usedStatefulCapability = true
-			}
-		}
-	}
-	if !capability.Supported && knownModeState && configuredCapability.Supported {
+	selection := selectPermissionModeReadCapability(reader, info.SessionName, provider, info.State, knownMode, knownModeState, configuredCapability)
+	capability := selection.Capability
+	if selection.UseConfiguredCapability {
 		resp.Capabilities.PermissionMode = configuredCapability
 		return
 	}
@@ -109,16 +93,16 @@ func (s *Server) enrichLivePermissionModeFromBead(resp *sessionResponse, info se
 	}
 	state, err := reader.PermissionMode(context.Background(), info.SessionName, provider)
 	if err != nil {
-		if usedStatefulCapability && knownModeState {
-			setResponsePermissionMode(resp, knownMode, knownVersion)
+		if selection.UsedStatefulCapability && knownModeState {
+			setResponseRuntimePermissionMode(resp, knownMode, knownVersion)
 			return
 		}
 		if knownModeState && knownVersion > 0 {
-			setResponsePermissionMode(resp, knownMode, knownVersion)
+			setResponseRuntimePermissionMode(resp, knownMode, knownVersion)
 			return
 		}
 		if knownModeState && configuredCapability.Supported {
-			setResponsePermissionMode(resp, knownMode, knownVersion)
+			setResponseRuntimePermissionMode(resp, knownMode, knownVersion)
 			resp.Capabilities.PermissionMode = configuredCapability
 			return
 		}
@@ -126,29 +110,54 @@ func (s *Server) enrichLivePermissionModeFromBead(resp *sessionResponse, info se
 		return
 	}
 	if state.Mode != "" {
-		setResponsePermissionMode(resp, state.Mode, state.Version)
+		setResponseRuntimePermissionMode(resp, state.Mode, state.Version)
 	}
 }
 
-func setResponsePermissionMode(resp *sessionResponse, mode runtime.PermissionMode, version uint64) {
-	if resp.Options == nil {
-		resp.Options = make(map[string]string, 1)
+type permissionModeReadCapabilitySelection struct {
+	Capability              runtime.PermissionModeCapability
+	UsedStatefulCapability  bool
+	UseConfiguredCapability bool
+}
+
+func selectPermissionModeReadCapability(reader runtime.PermissionModeReader, sessionName, provider string, state session.State, knownMode runtime.PermissionMode, hasKnownMode bool, configuredCapability sessionPermissionModeCapability) permissionModeReadCapabilitySelection {
+	selection := permissionModeReadCapabilitySelection{
+		Capability: reader.PermissionModeCapability(sessionName, provider),
 	}
-	resp.Options[permissionModeOptionKey] = string(mode)
+	if (!selection.Capability.Supported || !selection.Capability.Readable) && state == session.StateActive && hasKnownMode {
+		if stateful, ok := reader.(runtime.PermissionModeStatefulSwitcher); ok {
+			fallback := stateful.PermissionModeCapabilityForState(sessionName, provider, knownMode)
+			if fallback.Supported {
+				selection.Capability = fallback
+				selection.UsedStatefulCapability = true
+			}
+		}
+	}
+	if !selection.Capability.Supported && hasKnownMode && configuredCapability.Supported {
+		selection.UseConfiguredCapability = true
+	}
+	return selection
+}
+
+func setResponseRuntimePermissionMode(resp *sessionResponse, mode runtime.PermissionMode, version uint64) {
+	if resp.Runtime == nil {
+		resp.Runtime = &sessionRuntimeState{}
+	}
+	resp.Runtime.PermissionMode = mode
 	if version > 0 {
-		resp.ModeVersion = version
+		resp.Runtime.ModeVersion = version
 	}
 }
 
 func responsePermissionMode(resp *sessionResponse) (runtime.PermissionMode, uint64, bool) {
-	if resp == nil || resp.Options == nil {
+	if resp == nil || resp.Runtime == nil {
 		return "", 0, false
 	}
-	mode, ok := runtime.NormalizePermissionMode(resp.Options[permissionModeOptionKey])
+	mode, ok := runtime.NormalizePermissionMode(string(resp.Runtime.PermissionMode))
 	if !ok {
 		return "", 0, false
 	}
-	return mode, resp.ModeVersion, true
+	return mode, resp.Runtime.ModeVersion, true
 }
 
 func apiPermissionModeCapability(capability runtime.PermissionModeCapability) sessionPermissionModeCapability {
@@ -190,340 +199,22 @@ func stringPermissionModes(values []runtime.PermissionMode) []string {
 	return out
 }
 
-func parseModeVersion(value string) (uint64, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return 0, nil
-	}
-	n, err := strconv.ParseUint(trimmed, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid permission mode version %q: %w", trimmed, err)
-	}
-	return n, nil
-}
-
-func (s *Server) lockSessionPermissionMode(id string) func() {
-	if s == nil {
-		var mu sync.Mutex
-		mu.Lock()
-		return mu.Unlock
-	}
-	s.permissionModeLockMu.Lock()
-	if s.permissionModeLocks == nil {
-		s.permissionModeLocks = make(map[string]*sync.Mutex)
-	}
-	mu := s.permissionModeLocks[id]
-	if mu == nil {
-		mu = &sync.Mutex{}
-		s.permissionModeLocks[id] = mu
-	}
-	s.permissionModeLockMu.Unlock()
-
-	mu.Lock()
-	return mu.Unlock
-}
-
-func (s *Server) warnPermissionMode(key, format string, args ...any) {
-	if s == nil {
-		log.Printf("gc api: "+format, args...)
-		return
-	}
-	now := time.Now()
-	s.permissionModeWarningMu.Lock()
-	if s.permissionModeWarnings == nil {
-		s.permissionModeWarnings = make(map[string]time.Time)
-	}
-	if last, ok := s.permissionModeWarnings[key]; ok && now.Sub(last) < permissionModeWarningInterval {
-		s.permissionModeWarningMu.Unlock()
-		return
-	}
-	s.permissionModeWarnings[key] = now
-	s.permissionModeWarningMu.Unlock()
-	log.Printf("gc api: "+format, args...)
-}
-
-func (s *Server) humaHandleSessionPermissionMode(ctx context.Context, input *SessionPermissionModeInput) (*SessionPermissionModeOutput, error) {
-	target, err := s.resolvePermissionModeMutation(input)
-	if err != nil {
-		return nil, err
-	}
-	unlock := s.lockSessionPermissionMode(target.id)
-	defer unlock()
-
-	plan, err := s.planPermissionModeSwitch(target)
-	if err != nil {
-		return nil, err
-	}
-	state, err := s.applyPermissionModeSwitch(ctx, target, plan)
-	if err != nil {
-		return nil, err
-	}
-	version, err := s.persistPermissionMode(target.store, target.id, target.mode, state.Version)
-	if err != nil {
-		return nil, err
-	}
-	s.emitPermissionModeUpdate(target.info, target.id, target.mode, version)
-
-	out := &SessionPermissionModeOutput{}
-	out.Body.ID = target.id
-	out.Body.PermissionMode = target.mode
-	out.Body.ModeVersion = version
-	out.Body.Verified = state.Verified
-	return out, nil
-}
-
-type permissionModeMutationTarget struct {
-	store    beads.Store
-	id       string
-	info     session.Info
-	mode     runtime.PermissionMode
-	provider string
-	switcher runtime.PermissionModeSwitcher
-}
-
-type permissionModeSwitchPlan struct {
-	capability runtime.PermissionModeCapability
-	stateful   runtime.PermissionModeStatefulSwitcher
-	knownMode  runtime.PermissionMode
-	useKnown   bool
-}
-
-func (s *Server) resolvePermissionModeMutation(input *SessionPermissionModeInput) (permissionModeMutationTarget, error) {
-	var target permissionModeMutationTarget
-	store := s.state.CityBeadStore()
-	if store == nil {
-		return target, huma.Error503ServiceUnavailable("no bead store configured")
-	}
-	id, err := s.resolveSessionIDAllowClosedWithConfig(store, input.ID)
-	if err != nil {
-		return target, humaResolveError(err)
-	}
-	mgr := s.sessionManager(store)
-	info, err := mgr.Get(id)
-	if err != nil {
-		return target, humaSessionManagerError(err)
-	}
-	if info.Closed || info.State != session.StateActive {
-		return target, huma.Error409Conflict("not_running: session is not running")
-	}
-	mode, ok := runtime.NormalizePermissionMode(string(input.Body.PermissionMode))
-	if !ok {
-		return target, huma.Error422UnprocessableEntity("invalid: " + runtime.ErrPermissionModeInvalid.Error())
-	}
-	sp := s.state.SessionProvider()
-	if sp == nil || !sp.IsRunning(info.SessionName) {
-		return target, huma.Error409Conflict("not_running: session is not running")
-	}
-	switcher, ok := sp.(runtime.PermissionModeSwitcher)
-	if !ok {
-		return target, huma.Error501NotImplemented("unsupported: " + runtime.ErrPermissionModeUnsupported.Error())
-	}
-	target.store = store
-	target.id = id
-	target.info = info
-	target.mode = mode
-	target.provider = s.permissionModeRuntimeProvider(info)
-	target.switcher = switcher
-	return target, nil
-}
-
-func (s *Server) planPermissionModeSwitch(target permissionModeMutationTarget) (permissionModeSwitchPlan, error) {
-	var plan permissionModeSwitchPlan
-	knownMode, _, hasKnownMode, err := storedPermissionMode(target.store, target.id)
-	if err != nil {
-		return plan, humaStoreError(err)
-	}
-	if !hasKnownMode {
-		knownMode, hasKnownMode, err = configuredPermissionMode(target.store, target.id, target.info, s.state.Config())
-		if err != nil {
-			return plan, humaStoreError(err)
-		}
-	}
-	capability := target.switcher.PermissionModeCapability(target.info.SessionName, target.provider)
-	if (!capability.Supported || !capability.Readable) && hasKnownMode {
-		if statefulSwitch, ok := target.switcher.(runtime.PermissionModeStatefulSwitcher); ok {
-			fallback := statefulSwitch.PermissionModeCapabilityForState(target.info.SessionName, target.provider, knownMode)
-			if fallback.Supported {
-				capability = fallback
-				plan.stateful = statefulSwitch
-				plan.useKnown = true
-				plan.knownMode = knownMode
-			}
-		}
-	}
-	if !capability.Supported {
-		if hasKnownMode {
-			return plan, huma.Error501NotImplemented("unsupported: " + runtime.ErrPermissionModeSwitchUnsupported.Error())
-		}
-		return plan, huma.Error501NotImplemented("unsupported: " + firstNonEmptyString(capability.Reason, runtime.ErrPermissionModeUnsupported.Error()))
-	}
-	if !capability.LiveSwitch {
-		return plan, huma.Error501NotImplemented("unsupported: " + firstNonEmptyString(capability.Reason, runtime.ErrPermissionModeSwitchUnsupported.Error()))
-	}
-	if !permissionModeCapabilityAllows(capability, target.mode) {
-		return plan, huma.Error501NotImplemented(fmt.Sprintf("unsupported: permission mode %q is not supported by this session", target.mode))
-	}
-	plan.capability = capability
-	return plan, nil
-}
-
-func (s *Server) applyPermissionModeSwitch(ctx context.Context, target permissionModeMutationTarget, plan permissionModeSwitchPlan) (runtime.PermissionModeState, error) {
-	var state runtime.PermissionModeState
-	var err error
-	if plan.useKnown {
-		state, err = plan.stateful.SetPermissionModeFromState(ctx, target.info.SessionName, target.provider, plan.knownMode, target.mode)
-	} else {
-		state, err = target.switcher.SetPermissionMode(ctx, target.info.SessionName, target.provider, target.mode)
-	}
-	if err != nil {
-		if permissionModeVerificationUnavailable(err) {
-			state = runtime.PermissionModeState{Mode: target.mode, Verified: false}
-		} else {
-			return runtime.PermissionModeState{}, humaPermissionModeError(err)
-		}
-	}
-	if state.Mode != target.mode {
-		return runtime.PermissionModeState{}, huma.Error502BadGateway(fmt.Sprintf("verification_failed: confirmed %q, want %q", state.Mode, target.mode))
-	}
-	return state, nil
-}
-
-func (s *Server) persistPermissionMode(store beads.Store, id string, mode runtime.PermissionMode, providerVersion uint64) (uint64, error) {
-	version := providerVersion
-	nextVersion, err := s.nextStoredModeVersion(store, id)
-	if err != nil {
-		return 0, humaStoreError(err)
-	}
-	if version < nextVersion {
-		version = nextVersion
-	}
-	if err := store.SetMetadataBatch(id, map[string]string{
-		permissionModeMetadataKey:        string(mode),
-		permissionModeVersionMetadataKey: strconv.FormatUint(version, 10),
-	}); err != nil {
-		return 0, humaStoreError(err)
-	}
-	return version, nil
-}
-
-func (s *Server) emitPermissionModeUpdate(info session.Info, id string, mode runtime.PermissionMode, version uint64) {
-	s.emitAsyncResult(events.SessionUpdated, id, SessionUpdatedPayload{
-		SessionID:      id,
-		SessionName:    info.SessionName,
-		Provider:       info.Provider,
-		PermissionMode: string(mode),
-		ModeVersion:    version,
-		Options:        map[string]string{permissionModeOptionKey: string(mode)},
-	})
-}
-
-func (s *Server) nextStoredModeVersion(store beads.Store, id string) (uint64, error) {
-	b, err := store.Get(id)
-	if err != nil {
-		return 0, err
-	}
-	version, err := parseModeVersion(b.Metadata[permissionModeVersionMetadataKey])
-	if err != nil {
-		return 0, err
-	}
-	return version + 1, nil
-}
-
-func storedPermissionMode(store beads.Store, id string) (runtime.PermissionMode, uint64, bool, error) {
-	if store == nil {
-		return "", 0, false, nil
-	}
-	b, err := store.Get(id)
-	if err != nil {
-		return "", 0, false, err
-	}
-	mode, ok := runtime.NormalizePermissionMode(b.Metadata[permissionModeMetadataKey])
-	if !ok {
-		return "", 0, false, nil
-	}
-	version, err := parseModeVersion(b.Metadata[permissionModeVersionMetadataKey])
-	if err != nil {
-		return "", 0, false, err
-	}
-	return mode, version, true, nil
-}
-
-func configuredPermissionMode(store beads.Store, id string, info session.Info, cfg *config.City) (runtime.PermissionMode, bool, error) {
-	if store == nil {
-		return "", false, nil
-	}
-	b, err := store.Get(id)
-	if err != nil {
-		return "", false, err
-	}
-	resp := sessionResponseWithReason(info, &b, cfg, false)
-	mode, _, ok := responsePermissionMode(&resp)
-	return mode, ok, nil
-}
-
-func humaPermissionModeError(err error) error {
-	switch {
-	case errors.Is(err, runtime.ErrPermissionModeInvalid):
-		return huma.Error422UnprocessableEntity("invalid: " + err.Error())
-	case errors.Is(err, runtime.ErrPermissionModeVerificationFailed):
-		return huma.Error502BadGateway("verification_failed: " + err.Error())
-	case errors.Is(err, runtime.ErrPermissionModeUnsupported):
-		return huma.Error501NotImplemented("unsupported: " + err.Error())
-	case errors.Is(err, runtime.ErrPermissionModeSwitchUnsupported):
-		return huma.Error501NotImplemented("unsupported: " + err.Error())
-	case errors.Is(err, runtime.ErrSessionNotFound):
-		return huma.Error409Conflict("not_running: " + err.Error())
-	default:
-		return huma.Error500InternalServerError("internal: " + err.Error())
-	}
-}
-
-func permissionModeVerificationUnavailable(err error) bool {
-	return errors.Is(err, runtime.ErrPermissionModeVerificationFailed) && errors.Is(err, runtime.ErrPermissionModeUnsupported)
-}
-
-func permissionModeCapabilityAllows(capability runtime.PermissionModeCapability, mode runtime.PermissionMode) bool {
-	for _, value := range capability.Values {
-		if value == mode {
-			return true
-		}
-	}
-	return false
-}
-
-type sessionPermissionModeSnapshot struct {
-	Mode    string
-	Version uint64
-	Known   bool
-}
-
 func (s *Server) sessionPermissionModeSnapshot(info session.Info) sessionPermissionModeSnapshot {
 	var snapshot sessionPermissionModeSnapshot
 	if s == nil || s.state == nil {
 		return snapshot
 	}
-	if store := s.state.CityBeadStore(); store != nil {
-		if b, err := store.Get(info.ID); err == nil {
-			if mode, ok := runtime.NormalizePermissionMode(b.Metadata[permissionModeMetadataKey]); ok {
-				version, versionErr := parseModeVersion(b.Metadata[permissionModeVersionMetadataKey])
-				if versionErr != nil {
-					s.warnPermissionMode("snapshot-version:"+info.ID, "session %s permission mode version ignored: %v", info.ID, versionErr)
-				}
-				snapshot.Mode = string(mode)
-				snapshot.Version = version
-				snapshot.Known = true
-			}
-			if !snapshot.Known {
-				resp := sessionToResponse(info, s.state.Config())
-				applyConfiguredPermissionMode(&resp, &b)
-				if mode := resp.Options[permissionModeOptionKey]; mode != "" {
-					snapshot.Mode = mode
-					snapshot.Version = resp.ModeVersion
-					snapshot.Known = true
-				}
-			}
-		} else {
-			s.warnPermissionMode("snapshot-store:"+info.ID, "session %s permission mode bead lookup failed: %v", info.ID, err)
+	modeStore := s.permissionModeStore()
+	var err error
+	snapshot, err = modeStore.LoadStored(info.ID)
+	if err != nil && !snapshot.Known {
+		s.warnPermissionMode("snapshot-store:"+info.ID, "session %s permission mode bead lookup failed: %v", info.ID, err)
+	}
+	if !snapshot.Known {
+		if configured, cfgErr := modeStore.LoadConfigured(info.ID, info); cfgErr == nil {
+			snapshot = configured
+		} else if cfgErr != nil {
+			s.warnPermissionMode("snapshot-configured:"+info.ID, "session %s permission mode configured lookup failed: %v", info.ID, cfgErr)
 		}
 	}
 	reader, ok := s.state.SessionProvider().(runtime.PermissionModeReader)
@@ -602,41 +293,23 @@ func permissionModeResolvedProviderFamily(resolved *config.ResolvedProvider) str
 }
 
 func (s *Server) decorateStreamMessage(info session.Info, event *SessionStreamMessageEvent) {
-	snapshot := s.sessionPermissionModeSnapshot(info)
-	if snapshot.Known {
-		event.PermissionMode = snapshot.Mode
-		event.ModeVersion = snapshot.Version
-	}
+	s.sessionPermissionModeProjection(info).ApplyMessage(event)
 }
 
 func (s *Server) decorateRawStreamMessage(info session.Info, event *SessionStreamRawMessageEvent) {
-	snapshot := s.sessionPermissionModeSnapshot(info)
-	if snapshot.Known {
-		event.PermissionMode = snapshot.Mode
-		event.ModeVersion = snapshot.Version
-	}
+	s.sessionPermissionModeProjection(info).ApplyRawMessage(event)
 }
 
 func (s *Server) sessionActivityEvent(info session.Info, activity string) SessionActivityEvent {
-	snapshot := s.sessionPermissionModeSnapshot(info)
-	return sessionActivityEventFromSnapshot(activity, snapshot)
+	return s.sessionPermissionModeProjection(info).ActivityEvent(activity)
 }
 
 func (s *Server) sessionPermissionModeHeaderValues(info session.Info) (string, string) {
-	snapshot := s.sessionPermissionModeSnapshot(info)
-	if !snapshot.Known {
-		return "", ""
-	}
-	version := ""
-	if snapshot.Version > 0 {
-		version = strconv.FormatUint(snapshot.Version, 10)
-	}
-	return snapshot.Mode, version
+	return s.sessionPermissionModeProjection(info).HeaderValues()
 }
 
 func (s *Server) sessionStreamActivityPayload(info session.Info, activity string) sessionStreamActivityPayload {
-	snapshot := s.sessionPermissionModeSnapshot(info)
-	return sessionStreamActivityPayloadFromSnapshot(activity, snapshot)
+	return s.sessionPermissionModeProjection(info).ActivityPayload(activity)
 }
 
 type sessionPermissionModeStreamTracker struct {
@@ -658,7 +331,7 @@ func (s *Server) nextSessionPermissionModeActivityPayload(info session.Info, tra
 	if tracker == nil || !tracker.update(snapshot) {
 		return sessionStreamActivityPayload{}, false
 	}
-	return sessionStreamActivityPayloadFromSnapshot(activity, snapshot), true
+	return sessionPermissionModeProjectionFromSnapshot(snapshot).ActivityPayload(activity), true
 }
 
 func (s *Server) nextSessionPermissionModeActivityEvent(info session.Info, tracker *sessionPermissionModeStreamTracker, activity string) (SessionActivityEvent, bool) {
@@ -666,23 +339,5 @@ func (s *Server) nextSessionPermissionModeActivityEvent(info session.Info, track
 	if tracker == nil || !tracker.update(snapshot) {
 		return SessionActivityEvent{}, false
 	}
-	return sessionActivityEventFromSnapshot(activity, snapshot), true
-}
-
-func sessionStreamActivityPayloadFromSnapshot(activity string, snapshot sessionPermissionModeSnapshot) sessionStreamActivityPayload {
-	event := sessionStreamActivityPayload{Activity: activity}
-	if snapshot.Known {
-		event.PermissionMode = snapshot.Mode
-		event.ModeVersion = snapshot.Version
-	}
-	return event
-}
-
-func sessionActivityEventFromSnapshot(activity string, snapshot sessionPermissionModeSnapshot) SessionActivityEvent {
-	event := SessionActivityEvent{Activity: activity}
-	if snapshot.Known {
-		event.PermissionMode = snapshot.Mode
-		event.ModeVersion = snapshot.Version
-	}
-	return event
+	return sessionPermissionModeProjectionFromSnapshot(snapshot).ActivityEvent(activity), true
 }

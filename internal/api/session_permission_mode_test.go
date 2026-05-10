@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -84,6 +86,9 @@ func TestSessionReadsExposeCanonicalPermissionMode(t *testing.T) {
 		t.Fatalf("list items = %d, want 1", len(list.Items))
 	}
 	assertPermissionModeResponse(t, list.Items[0], "acceptEdits", 11, true)
+	if got := list.Items[0].Options["permission_mode"]; got != "unrestricted" {
+		t.Fatalf("list options.permission_mode = %q, want schema-backed unrestricted", got)
+	}
 
 	getReq := httptest.NewRequest(http.MethodGet, cityURL(fs, "/session/")+info.ID, nil)
 	getRec := httptest.NewRecorder()
@@ -96,6 +101,9 @@ func TestSessionReadsExposeCanonicalPermissionMode(t *testing.T) {
 		t.Fatalf("decode detail: %v", err)
 	}
 	assertPermissionModeResponse(t, detail, "acceptEdits", 11, true)
+	if got := detail.Options["permission_mode"]; got != "unrestricted" {
+		t.Fatalf("detail options.permission_mode = %q, want schema-backed unrestricted", got)
+	}
 }
 
 func TestSessionReadCanonicalizesConfiguredPermissionMode(t *testing.T) {
@@ -114,8 +122,14 @@ func TestSessionReadCanonicalizesConfiguredPermissionMode(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
 		t.Fatalf("decode detail: %v", err)
 	}
-	if got := detail.Options["permission_mode"]; got != "bypassPermissions" {
-		t.Fatalf("options.permission_mode = %q, want bypassPermissions", got)
+	if got := detail.Options["permission_mode"]; got != "unrestricted" {
+		t.Fatalf("options.permission_mode = %q, want schema-backed unrestricted", got)
+	}
+	if detail.Runtime == nil {
+		t.Fatal("runtime is nil")
+	}
+	if got := string(detail.Runtime.PermissionMode); got != "bypassPermissions" {
+		t.Fatalf("runtime.permission_mode = %q, want bypassPermissions", got)
 	}
 	capability := detail.Capabilities.PermissionMode
 	if !capability.Supported || !capability.Readable || !capability.LiveSwitch {
@@ -153,8 +167,14 @@ func TestProviderSessionReadExposesConfiguredPermissionMode(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
 		t.Fatalf("decode detail: %v", err)
 	}
-	if got := detail.Options["permission_mode"]; got != "bypassPermissions" {
-		t.Fatalf("options.permission_mode = %q, want bypassPermissions", got)
+	if got := detail.Options["permission_mode"]; got != "unrestricted" {
+		t.Fatalf("options.permission_mode = %q, want schema-backed unrestricted", got)
+	}
+	if detail.Runtime == nil {
+		t.Fatal("runtime is nil")
+	}
+	if got := string(detail.Runtime.PermissionMode); got != "bypassPermissions" {
+		t.Fatalf("runtime.permission_mode = %q, want bypassPermissions", got)
 	}
 	capability := detail.Capabilities.PermissionMode
 	if !capability.Supported || capability.Readable || capability.LiveSwitch {
@@ -221,6 +241,180 @@ func TestSessionReadUsesConfiguredModeForStatefulFallbackWhenLiveModeCannotBeRea
 	}
 }
 
+func TestSelectPermissionModeReadCapabilityUsesStatefulKnownMode(t *testing.T) {
+	f := runtime.NewFake()
+	if err := f.Start(context.Background(), "session-a", runtime.Config{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	f.PermissionModeReadErrors["session-a"] = runtime.ErrPermissionModeUnsupported
+
+	selection := selectPermissionModeReadCapability(
+		f,
+		"session-a",
+		"claude",
+		session.StateActive,
+		runtime.PermissionModeDefault,
+		true,
+		sessionPermissionModeCapability{Supported: true},
+	)
+	if !selection.UsedStatefulCapability {
+		t.Fatalf("UsedStatefulCapability = false, want true; selection=%+v", selection)
+	}
+	if !selection.Capability.Supported || !selection.Capability.Readable || !selection.Capability.LiveSwitch {
+		t.Fatalf("Capability = %+v, want supported readable live_switch", selection.Capability)
+	}
+	if !permissionModeCapabilityAllows(selection.Capability, runtime.PermissionModeAcceptEdits) {
+		t.Fatalf("Capability values = %v, want acceptEdits", selection.Capability.Values)
+	}
+}
+
+func TestSessionReadLogsInvalidStoredPermissionModeVersion(t *testing.T) {
+	fs := newSessionFakeState(t)
+	configurePermissionModeProvider(fs, "normal")
+	srv := New(fs)
+	h := newTestCityHandlerWith(t, fs, srv)
+	info := createPermissionModeSession(t, fs)
+	if err := fs.cityBeadStore.SetMetadataBatch(info.ID, map[string]string{
+		permissionModeMetadataKey:        string(runtime.PermissionModeAcceptEdits),
+		permissionModeVersionMetadataKey: "not-a-version",
+	}); err != nil {
+		t.Fatalf("seed mode metadata: %v", err)
+	}
+	fs.sp.PermissionModeReadErrors[info.SessionName] = runtime.ErrPermissionModeUnsupported
+
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousWriter)
+
+	req := httptest.NewRequest(http.MethodGet, cityURL(fs, "/session/")+info.ID, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := logs.String(); !strings.Contains(got, "invalid permission mode version") {
+		t.Fatalf("log output missing invalid version warning:\n%s", got)
+	}
+}
+
+func TestPermissionModeStoreLoadsAndSavesRuntimeMode(t *testing.T) {
+	fs := newSessionFakeState(t)
+	configurePermissionModeProvider(fs, "unrestricted")
+	info := createPermissionModeSession(t, fs)
+	var warnings []string
+	store := newSessionPermissionModeStore(fs.cityBeadStore, fs.cfg, func(key, format string, args ...any) {
+		warnings = append(warnings, key+": "+fmt.Sprintf(format, args...))
+	})
+
+	configured, err := store.LoadConfigured(info.ID, info)
+	if err != nil {
+		t.Fatalf("LoadConfigured: %v", err)
+	}
+	if !configured.Known || configured.Mode != "bypassPermissions" || configured.Version != 0 {
+		t.Fatalf("configured snapshot = %+v, want bypassPermissions version 0", configured)
+	}
+
+	version, err := store.SaveNext(info.ID, runtime.PermissionModeAcceptEdits, 4)
+	if err != nil {
+		t.Fatalf("SaveNext provider version: %v", err)
+	}
+	if version != 4 {
+		t.Fatalf("SaveNext provider version = %d, want 4", version)
+	}
+	version, err = store.SaveNext(info.ID, runtime.PermissionModePlan, 2)
+	if err != nil {
+		t.Fatalf("SaveNext stored version: %v", err)
+	}
+	if version != 5 {
+		t.Fatalf("SaveNext stored version = %d, want 5", version)
+	}
+	stored, err := store.LoadStored(info.ID)
+	if err != nil {
+		t.Fatalf("LoadStored: %v", err)
+	}
+	if !stored.Known || stored.Mode != "plan" || stored.Version != 5 {
+		t.Fatalf("stored snapshot = %+v, want plan version 5", stored)
+	}
+
+	if err := fs.cityBeadStore.SetMetadata(info.ID, permissionModeVersionMetadataKey, "bogus"); err != nil {
+		t.Fatalf("seed invalid version: %v", err)
+	}
+	stored, err = store.LoadStored(info.ID)
+	if err == nil {
+		t.Fatal("LoadStored invalid version err = nil, want error")
+	}
+	if !stored.Known || stored.Mode != "plan" {
+		t.Fatalf("invalid-version snapshot = %+v, want known plan", stored)
+	}
+	if len(warnings) == 0 || !strings.Contains(warnings[len(warnings)-1], "invalid permission mode version") {
+		t.Fatalf("warnings = %#v, want invalid version warning", warnings)
+	}
+}
+
+func TestSessionPermissionModeProjectionAppliesSnapshotConsistently(t *testing.T) {
+	projection := sessionPermissionModeProjectionFromSnapshot(sessionPermissionModeSnapshot{
+		Mode:    "acceptEdits",
+		Version: 12,
+		Known:   true,
+	})
+
+	message := SessionStreamMessageEvent{}
+	projection.ApplyMessage(&message)
+	if message.PermissionMode != "acceptEdits" || message.ModeVersion != 12 {
+		t.Fatalf("message projection = %+v, want acceptEdits version 12", message)
+	}
+	raw := SessionStreamRawMessageEvent{}
+	projection.ApplyRawMessage(&raw)
+	if raw.PermissionMode != "acceptEdits" || raw.ModeVersion != 12 {
+		t.Fatalf("raw projection = %+v, want acceptEdits version 12", raw)
+	}
+	activity := projection.ActivityPayload("idle")
+	if activity.Activity != "idle" || activity.PermissionMode != "acceptEdits" || activity.ModeVersion != 12 {
+		t.Fatalf("activity payload = %+v, want idle acceptEdits version 12", activity)
+	}
+	event := projection.ActivityEvent("idle")
+	if event.Activity != "idle" || event.PermissionMode != "acceptEdits" || event.ModeVersion != 12 {
+		t.Fatalf("activity event = %+v, want idle acceptEdits version 12", event)
+	}
+	mode, version := projection.HeaderValues()
+	if mode != "acceptEdits" || version != "12" {
+		t.Fatalf("headers = (%q, %q), want acceptEdits, 12", mode, version)
+	}
+
+	unknown := sessionPermissionModeProjectionFromSnapshot(sessionPermissionModeSnapshot{})
+	mode, version = unknown.HeaderValues()
+	if mode != "" || version != "" {
+		t.Fatalf("unknown headers = (%q, %q), want empty", mode, version)
+	}
+}
+
+func TestSessionUpdatedPayloadSchemaOmitsOptions(t *testing.T) {
+	fs := newSessionFakeState(t)
+	h := newTestCityHandler(t, fs)
+
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /openapi.json status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var spec struct {
+		Components struct {
+			Schemas map[string]struct {
+				Properties map[string]any `json:"properties"`
+			} `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &spec); err != nil {
+		t.Fatalf("decode openapi: %v", err)
+	}
+	properties := spec.Components.Schemas["SessionUpdatedPayload"].Properties
+	if _, ok := properties["options"]; ok {
+		t.Fatalf("SessionUpdatedPayload schema still exposes options: %v", properties)
+	}
+}
+
 func TestSetSessionPermissionModeAppliesAndReturnsConfirmedMode(t *testing.T) {
 	fs := newSessionFakeState(t)
 	configurePermissionModeProvider(fs, "normal")
@@ -278,11 +472,18 @@ func TestSetSessionPermissionModeAppliesAndReturnsConfirmedMode(t *testing.T) {
 	if err := json.Unmarshal(evts[len(evts)-1].Payload, &payload); err != nil {
 		t.Fatalf("decode session.updated payload: %v", err)
 	}
-	if payload.PermissionMode != "acceptEdits" {
+	if payload.PermissionMode != runtime.PermissionModeAcceptEdits {
 		t.Fatalf("event permission_mode = %q, want acceptEdits", payload.PermissionMode)
 	}
 	if payload.ModeVersion != out.ModeVersion {
 		t.Fatalf("event mode_version = %d, want %d", payload.ModeVersion, out.ModeVersion)
+	}
+	var rawPayload map[string]json.RawMessage
+	if err := json.Unmarshal(evts[len(evts)-1].Payload, &rawPayload); err != nil {
+		t.Fatalf("decode raw session.updated payload: %v", err)
+	}
+	if _, ok := rawPayload["options"]; ok {
+		t.Fatalf("event payload includes options, want live state outside options: %s", evts[len(evts)-1].Payload)
 	}
 }
 
@@ -546,11 +747,17 @@ func TestSessionReadKeepsStoredModeCapabilityWhenLiveReadUnavailable(t *testing.
 	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
 		t.Fatalf("decode detail: %v", err)
 	}
-	if got := detail.Options["permission_mode"]; got != "acceptEdits" {
-		t.Fatalf("options.permission_mode = %q, want acceptEdits", got)
+	if got := detail.Options["permission_mode"]; got != "normal" {
+		t.Fatalf("options.permission_mode = %q, want schema-backed normal", got)
 	}
-	if detail.ModeVersion != 6 {
-		t.Fatalf("mode_version = %d, want 6", detail.ModeVersion)
+	if detail.Runtime == nil {
+		t.Fatal("runtime is nil")
+	}
+	if got := string(detail.Runtime.PermissionMode); got != "acceptEdits" {
+		t.Fatalf("runtime.permission_mode = %q, want acceptEdits", got)
+	}
+	if detail.Runtime.ModeVersion != 6 {
+		t.Fatalf("runtime.mode_version = %d, want 6", detail.Runtime.ModeVersion)
 	}
 	capability := detail.Capabilities.PermissionMode
 	if !capability.Supported || !capability.Readable || !capability.LiveSwitch {
@@ -615,6 +822,71 @@ func TestSessionPermissionModeLockSerializesSameSession(t *testing.T) {
 	wg.Wait()
 }
 
+func TestSetSessionPermissionModeConcurrentRequestsProduceUniqueMonotonicVersions(t *testing.T) {
+	fs := newSessionFakeState(t)
+	configurePermissionModeProvider(fs, "normal")
+	srv := New(fs)
+	h := newTestCityHandlerWith(t, fs, srv)
+	info := createPermissionModeSession(t, fs)
+	fs.sp.SetPermissionModeState(info.SessionName, runtime.PermissionModeState{
+		Mode:     runtime.PermissionModeDefault,
+		Version:  1,
+		Verified: true,
+	})
+	const requests = 6
+	modes := []string{"acceptEdits", "plan", "bypassPermissions", "default", "acceptEdits", "plan"}
+	type result struct {
+		Status  int
+		Body    string
+		Version uint64
+	}
+	results := make([]result, requests)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(requests)
+	for i := 0; i < requests; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			<-start
+			req := newPostRequest(cityURL(fs, "/session/")+info.ID+"/permission-mode", strings.NewReader(`{"permission_mode":"`+modes[i]+`"}`))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			results[i].Status = rec.Code
+			results[i].Body = rec.Body.String()
+			if rec.Code == http.StatusOK {
+				var out struct {
+					ModeVersion uint64 `json:"mode_version"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &out); err == nil {
+					results[i].Version = out.ModeVersion
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	seen := make(map[uint64]bool, requests)
+	for i, result := range results {
+		if result.Status != http.StatusOK {
+			t.Fatalf("request %d status = %d, want %d; body: %s", i, result.Status, http.StatusOK, result.Body)
+		}
+		if result.Version < 2 {
+			t.Fatalf("request %d version = %d, want >= 2", i, result.Version)
+		}
+		if seen[result.Version] {
+			t.Fatalf("duplicate mode_version %d in results: %+v", result.Version, results)
+		}
+		seen[result.Version] = true
+	}
+	for version := uint64(2); version < uint64(2+requests); version++ {
+		if !seen[version] {
+			t.Fatalf("missing mode_version %d in results: %+v", version, results)
+		}
+	}
+}
+
 func TestSessionStreamIncludesPermissionMode(t *testing.T) {
 	fs := newSessionFakeState(t)
 	configurePermissionModeProvider(fs, "normal")
@@ -676,11 +948,14 @@ func assertPermissionModeResponse(t *testing.T, resp sessionResponse, wantMode s
 	if resp.Options == nil {
 		t.Fatal("options is nil")
 	}
-	if got := resp.Options["permission_mode"]; got != wantMode {
-		t.Fatalf("options.permission_mode = %q, want %q", got, wantMode)
+	if resp.Runtime == nil {
+		t.Fatal("runtime is nil")
 	}
-	if resp.ModeVersion != wantVersion {
-		t.Fatalf("mode_version = %d, want %d", resp.ModeVersion, wantVersion)
+	if got := string(resp.Runtime.PermissionMode); got != wantMode {
+		t.Fatalf("runtime.permission_mode = %q, want %q", got, wantMode)
+	}
+	if resp.Runtime.ModeVersion != wantVersion {
+		t.Fatalf("runtime.mode_version = %d, want %d", resp.Runtime.ModeVersion, wantVersion)
 	}
 	capability := resp.Capabilities.PermissionMode
 	if !capability.Supported {

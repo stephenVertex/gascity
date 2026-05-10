@@ -141,7 +141,7 @@ func TestGraphWorkflowFailureRunsCleanup(t *testing.T) {
 func assertControlDispatcherLane(t *testing.T, cityDir string) {
 	t.Helper()
 
-	workflowTrace := readOptionalFile(filepath.Join(cityDir, ".gc", "runtime", "control-dispatcher-trace.log"))
+	workflowTrace := readOptionalFile(filepath.Join(cityDir, "control-dispatcher-trace.log"))
 	if !strings.Contains(workflowTrace, "serve process bead=") {
 		t.Fatalf("control-dispatcher trace missing processed control bead evidence:\n%s", workflowTrace)
 	}
@@ -154,7 +154,7 @@ func assertControlDispatcherLane(t *testing.T, cityDir string) {
 
 func graphWorkflowCloseTimeout() time.Duration {
 	if runtime.GOOS == "darwin" {
-		return 10 * time.Minute
+		return 6 * time.Minute
 	}
 	return 180 * time.Second
 }
@@ -173,8 +173,8 @@ func setupGraphWorkflowCity(t *testing.T, mode string) string {
 
 	startCommand := "GC_GRAPH_MODE=" + mode + " bash " + agentScript("graph-dispatch.sh")
 	cityToml := fmt.Sprintf(
-		"[workspace]\nname = %q\n\n[session]\nprovider = \"subprocess\"\n\n[daemon]\nformula_v2 = true\npatrol_interval = \"100ms\"\n\n%s[[agent]]\nname = \"worker\"\nmax_active_sessions = 1\nstart_command = %q\n\n[[named_session]]\ntemplate = \"worker\"\nmode = \"always\"\n",
-		cityName, integrationSkipBackgroundOrdersTOML, startCommand,
+		"[workspace]\nname = %q\n\n[session]\nprovider = \"subprocess\"\n\n[daemon]\nformula_v2 = true\npatrol_interval = \"100ms\"\n\n[[agent]]\nname = \"worker\"\nmax_active_sessions = 1\nstart_command = %q\n\n[[named_session]]\ntemplate = \"worker\"\nmode = \"always\"\n",
+		cityName, startCommand,
 	)
 	configPath := filepath.Join(t.TempDir(), "graph-workflow.toml")
 	if err := os.WriteFile(configPath, []byte(cityToml), 0o644); err != nil {

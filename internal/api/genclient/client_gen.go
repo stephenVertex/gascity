@@ -156,6 +156,54 @@ func (e SessionPermissionModeOutputBodyPermissionMode) Valid() bool {
 	}
 }
 
+// Defines values for SessionRuntimeStatePermissionMode.
+const (
+	SessionRuntimeStatePermissionModeAcceptEdits       SessionRuntimeStatePermissionMode = "acceptEdits"
+	SessionRuntimeStatePermissionModeBypassPermissions SessionRuntimeStatePermissionMode = "bypassPermissions"
+	SessionRuntimeStatePermissionModeDefault           SessionRuntimeStatePermissionMode = "default"
+	SessionRuntimeStatePermissionModePlan              SessionRuntimeStatePermissionMode = "plan"
+)
+
+// Valid indicates whether the value is a known member of the SessionRuntimeStatePermissionMode enum.
+func (e SessionRuntimeStatePermissionMode) Valid() bool {
+	switch e {
+	case SessionRuntimeStatePermissionModeAcceptEdits:
+		return true
+	case SessionRuntimeStatePermissionModeBypassPermissions:
+		return true
+	case SessionRuntimeStatePermissionModeDefault:
+		return true
+	case SessionRuntimeStatePermissionModePlan:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SessionUpdatedPayloadPermissionMode.
+const (
+	SessionUpdatedPayloadPermissionModeAcceptEdits       SessionUpdatedPayloadPermissionMode = "acceptEdits"
+	SessionUpdatedPayloadPermissionModeBypassPermissions SessionUpdatedPayloadPermissionMode = "bypassPermissions"
+	SessionUpdatedPayloadPermissionModeDefault           SessionUpdatedPayloadPermissionMode = "default"
+	SessionUpdatedPayloadPermissionModePlan              SessionUpdatedPayloadPermissionMode = "plan"
+)
+
+// Valid indicates whether the value is a known member of the SessionUpdatedPayloadPermissionMode enum.
+func (e SessionUpdatedPayloadPermissionMode) Valid() bool {
+	switch e {
+	case SessionUpdatedPayloadPermissionModeAcceptEdits:
+		return true
+	case SessionUpdatedPayloadPermissionModeBypassPermissions:
+		return true
+	case SessionUpdatedPayloadPermissionModeDefault:
+		return true
+	case SessionUpdatedPayloadPermissionModePlan:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SubmitIntent.
 const (
 	Default      SubmitIntent = "default"
@@ -2435,7 +2483,6 @@ type SessionResponse struct {
 	LastActive             *string                 `json:"last_active,omitempty"`
 	LastOutput             *string                 `json:"last_output,omitempty"`
 	Metadata               *map[string]string      `json:"metadata,omitempty"`
-	ModeVersion            *int64                  `json:"mode_version,omitempty"`
 	Model                  *string                 `json:"model,omitempty"`
 	Options                *map[string]string      `json:"options,omitempty"`
 	Pool                   *string                 `json:"pool,omitempty"`
@@ -2443,12 +2490,25 @@ type SessionResponse struct {
 	Reason                 *string                 `json:"reason,omitempty"`
 	Rig                    *string                 `json:"rig,omitempty"`
 	Running                bool                    `json:"running"`
+	Runtime                *SessionRuntimeState    `json:"runtime,omitempty"`
 	SessionName            string                  `json:"session_name"`
 	State                  string                  `json:"state"`
 	SubmissionCapabilities *SubmissionCapabilities `json:"submission_capabilities,omitempty"`
 	Template               string                  `json:"template"`
 	Title                  string                  `json:"title"`
 }
+
+// SessionRuntimeState defines model for SessionRuntimeState.
+type SessionRuntimeState struct {
+	// ModeVersion Monotonically increasing live runtime permission mode version when known.
+	ModeVersion *int64 `json:"mode_version,omitempty"`
+
+	// PermissionMode Canonical live runtime permission mode when known.
+	PermissionMode *SessionRuntimeStatePermissionMode `json:"permission_mode,omitempty"`
+}
+
+// SessionRuntimeStatePermissionMode Canonical live runtime permission mode when known.
+type SessionRuntimeStatePermissionMode string
 
 // SessionStreamCommonEvent Non-message events emitted on the session SSE stream: activity transitions, pending interactions, and keepalive heartbeats. The concrete variant is identified by the SSE event name.
 type SessionStreamCommonEvent struct {
@@ -2537,13 +2597,15 @@ type SessionTranscriptGetResponse struct {
 
 // SessionUpdatedPayload defines model for SessionUpdatedPayload.
 type SessionUpdatedPayload struct {
-	ModeVersion    *int64             `json:"mode_version,omitempty"`
-	Options        *map[string]string `json:"options,omitempty"`
-	PermissionMode *string            `json:"permission_mode,omitempty"`
-	Provider       *string            `json:"provider,omitempty"`
-	SessionId      *string            `json:"session_id,omitempty"`
-	SessionName    *string            `json:"session_name,omitempty"`
+	ModeVersion    *int64                               `json:"mode_version,omitempty"`
+	PermissionMode *SessionUpdatedPayloadPermissionMode `json:"permission_mode,omitempty"`
+	Provider       *string                              `json:"provider,omitempty"`
+	SessionId      *string                              `json:"session_id,omitempty"`
+	SessionName    *string                              `json:"session_name,omitempty"`
 }
+
+// SessionUpdatedPayloadPermissionMode defines model for SessionUpdatedPayload.PermissionMode.
+type SessionUpdatedPayloadPermissionMode string
 
 // SlingInputBody defines model for SlingInputBody.
 type SlingInputBody struct {
