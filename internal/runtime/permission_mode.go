@@ -66,6 +66,13 @@ type PermissionModeSwitcher interface {
 	SetPermissionMode(ctx context.Context, sessionName, provider string, mode PermissionMode) (PermissionModeState, error)
 }
 
+// PermissionModeStatefulSwitcher is implemented by providers that can switch
+// from a caller-supplied current mode when the current pane no longer reports it.
+type PermissionModeStatefulSwitcher interface {
+	PermissionModeCapabilityForState(sessionName, provider string, current PermissionMode) PermissionModeCapability
+	SetPermissionModeFromState(ctx context.Context, sessionName, provider string, current, mode PermissionMode) (PermissionModeState, error)
+}
+
 // NormalizePermissionMode maps provider aliases onto the canonical permission
 // mode vocabulary used by the supervisor API.
 func NormalizePermissionMode(value string) (PermissionMode, bool) {
@@ -92,4 +99,53 @@ func CanonicalPermissionModes() []PermissionMode {
 		PermissionModePlan,
 		PermissionModeBypassPermissions,
 	}
+}
+
+// PermissionModeCycleValues returns the modes reachable from the current mode
+// through the standard live mode cycle.
+func PermissionModeCycleValues(current PermissionMode) []PermissionMode {
+	switch current {
+	case PermissionModeDefault, PermissionModeAcceptEdits, PermissionModePlan, PermissionModeBypassPermissions:
+		return []PermissionMode{
+			PermissionModeDefault,
+			PermissionModeAcceptEdits,
+			PermissionModePlan,
+			PermissionModeBypassPermissions,
+		}
+	default:
+		return nil
+	}
+}
+
+// PermissionModeCycleSteps reports how many live-cycle steps move from current
+// to target.
+func PermissionModeCycleSteps(current, target PermissionMode) (int, bool) {
+	cycle := PermissionModeCycleValues(current)
+	if len(cycle) == 0 {
+		return 0, false
+	}
+	currentIndex := -1
+	targetIndex := -1
+	for i, mode := range cycle {
+		if mode == current {
+			currentIndex = i
+		}
+		if mode == target {
+			targetIndex = i
+		}
+	}
+	if currentIndex < 0 || targetIndex < 0 {
+		return 0, false
+	}
+	if targetIndex >= currentIndex {
+		return targetIndex - currentIndex, true
+	}
+	return len(cycle) - currentIndex + targetIndex, true
+}
+
+// PermissionModeCanSwitch reports whether target is reachable from current
+// through the standard live mode cycle.
+func PermissionModeCanSwitch(current, target PermissionMode) bool {
+	_, ok := PermissionModeCycleSteps(current, target)
+	return ok
 }

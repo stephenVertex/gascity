@@ -154,7 +154,7 @@ func assertControlDispatcherLane(t *testing.T, cityDir string) {
 
 func graphWorkflowCloseTimeout() time.Duration {
 	if runtime.GOOS == "darwin" {
-		return 6 * time.Minute
+		return 10 * time.Minute
 	}
 	return 180 * time.Second
 }

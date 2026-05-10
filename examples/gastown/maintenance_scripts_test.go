@@ -1082,22 +1082,12 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"DOLT_ARGS_LOG":    doltLog,
-		"GC_CALL_LOG":      gcLog,
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, map[string]string{
 		"DOLT_DBS":         "beads",
-		"GC_CITY":          cityDir,
-		"GC_CITY_PATH":     cityDir,
-		"GC_DOLT_HOST":     "127.0.0.1",
-		"GC_DOLT_PORT":     "3307",
-		"GC_DOLT_USER":     "root",
-		"GC_DOLT_PASSWORD": "",
 		"DOLT_PURGE_COUNT": "1",
-		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-		// No GC_REAPER_DRY_RUN — allow DOLT_COMMIT to fire.
-	}
+	})
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	logData, err := os.ReadFile(doltLog)
 	if err != nil {
@@ -1207,20 +1197,11 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, map[string]string{
 		"CLOSE_COUNT_STATE": closeCountState,
-		"DOLT_ARGS_LOG":     doltLog,
-		"GC_CALL_LOG":       gcLog,
-		"GC_CITY":           cityDir,
-		"GC_CITY_PATH":      cityDir,
-		"GC_DOLT_HOST":      "127.0.0.1",
-		"GC_DOLT_PORT":      "3307",
-		"GC_DOLT_USER":      "root",
-		"GC_DOLT_PASSWORD":  "",
-		"PATH":              binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	})
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	logData, err := os.ReadFile(doltLog)
 	if err != nil {
@@ -1280,19 +1261,9 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"DOLT_ARGS_LOG":    doltLog,
-		"GC_CALL_LOG":      gcLog,
-		"GC_CITY":          cityDir,
-		"GC_CITY_PATH":     cityDir,
-		"GC_DOLT_HOST":     "127.0.0.1",
-		"GC_DOLT_PORT":     "3307",
-		"GC_DOLT_USER":     "root",
-		"GC_DOLT_PASSWORD": "",
-		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, nil)
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	doltData, err := os.ReadFile(doltLog)
 	if err != nil {
@@ -1351,20 +1322,11 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"DOLT_ARGS_LOG":    doltLog,
-		"BD_CALL_LOG":      bdLog,
-		"GC_CALL_LOG":      gcLog,
-		"GC_CITY":          cityDir,
-		"GC_CITY_PATH":     cityDir,
-		"GC_DOLT_HOST":     "127.0.0.1",
-		"GC_DOLT_PORT":     "3307",
-		"GC_DOLT_USER":     "root",
-		"GC_DOLT_PASSWORD": "",
-		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, map[string]string{
+		"BD_CALL_LOG": bdLog,
+	})
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	bdData, err := os.ReadFile(bdLog)
 	if err != nil {
@@ -1429,19 +1391,9 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"DOLT_ARGS_LOG":    doltLog,
-		"GC_CALL_LOG":      gcLog,
-		"GC_CITY":          cityDir,
-		"GC_CITY_PATH":     cityDir,
-		"GC_DOLT_HOST":     "127.0.0.1",
-		"GC_DOLT_PORT":     "3307",
-		"GC_DOLT_USER":     "root",
-		"GC_DOLT_PASSWORD": "",
-		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, nil)
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	logData, err := os.ReadFile(doltLog)
 	if err != nil {
@@ -1509,20 +1461,11 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, map[string]string{
 		"CLOSE_COUNT_STATE": closeCountState,
-		"DOLT_ARGS_LOG":     doltLog,
-		"GC_CALL_LOG":       gcLog,
-		"GC_CITY":           cityDir,
-		"GC_CITY_PATH":      cityDir,
-		"GC_DOLT_HOST":      "127.0.0.1",
-		"GC_DOLT_PORT":      "3307",
-		"GC_DOLT_USER":      "root",
-		"GC_DOLT_PASSWORD":  "",
-		"PATH":              binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	})
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	logData, err := os.ReadFile(doltLog)
 	if err != nil {
@@ -1596,19 +1539,9 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"DOLT_ARGS_LOG":    doltLog,
-		"GC_CALL_LOG":      gcLog,
-		"GC_CITY":          cityDir,
-		"GC_CITY_PATH":     cityDir,
-		"GC_DOLT_HOST":     "127.0.0.1",
-		"GC_DOLT_PORT":     "3307",
-		"GC_DOLT_USER":     "root",
-		"GC_DOLT_PASSWORD": "",
-		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, nil)
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	logData, err := os.ReadFile(doltLog)
 	if err != nil {
@@ -1667,19 +1600,9 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"DOLT_ARGS_LOG":    doltLog,
-		"GC_CALL_LOG":      gcLog,
-		"GC_CITY":          cityDir,
-		"GC_CITY_PATH":     cityDir,
-		"GC_DOLT_HOST":     "127.0.0.1",
-		"GC_DOLT_PORT":     "3307",
-		"GC_DOLT_USER":     "root",
-		"GC_DOLT_PASSWORD": "",
-		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, nil)
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	gcData, err := os.ReadFile(gcLog)
 	if err != nil {
@@ -1749,20 +1672,11 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, map[string]string{
 		"CLOSE_COUNT_STATE": closeCountState,
-		"DOLT_ARGS_LOG":     doltLog,
-		"GC_CALL_LOG":       gcLog,
-		"GC_CITY":           cityDir,
-		"GC_CITY_PATH":      cityDir,
-		"GC_DOLT_HOST":      "127.0.0.1",
-		"GC_DOLT_PORT":      "3307",
-		"GC_DOLT_USER":      "root",
-		"GC_DOLT_PASSWORD":  "",
-		"PATH":              binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	})
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	logData, err := os.ReadFile(doltLog)
 	if err != nil {
@@ -1828,20 +1742,11 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"DOLT_ARGS_LOG":    doltLog,
-		"BD_CALL_LOG":      filepath.Join(t.TempDir(), "bd.log"),
-		"GC_CALL_LOG":      gcLog,
-		"GC_CITY":          cityDir,
-		"GC_CITY_PATH":     cityDir,
-		"GC_DOLT_HOST":     "127.0.0.1",
-		"GC_DOLT_PORT":     "3307",
-		"GC_DOLT_USER":     "root",
-		"GC_DOLT_PASSWORD": "",
-		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, map[string]string{
+		"BD_CALL_LOG": filepath.Join(t.TempDir(), "bd.log"),
+	})
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	gcData, err := os.ReadFile(gcLog)
 	if err != nil {
@@ -1894,20 +1799,11 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"DOLT_ARGS_LOG":    doltLog,
-		"BD_CALL_LOG":      bdLog,
-		"GC_CALL_LOG":      gcLog,
-		"GC_CITY":          cityDir,
-		"GC_CITY_PATH":     cityDir,
-		"GC_DOLT_HOST":     "127.0.0.1",
-		"GC_DOLT_PORT":     "3307",
-		"GC_DOLT_USER":     "root",
-		"GC_DOLT_PASSWORD": "",
-		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, map[string]string{
+		"BD_CALL_LOG": bdLog,
+	})
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	bdData, err := os.ReadFile(bdLog)
 	if err != nil {
@@ -1969,20 +1865,12 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"DOLT_ARGS_LOG":    doltLog,
-		"BD_CALL_LOG":      bdLog,
-		"GC_CALL_LOG":      gcLog,
-		"GC_CITY":          "",
-		"GC_CITY_PATH":     cityDir,
-		"GC_DOLT_HOST":     "127.0.0.1",
-		"GC_DOLT_PORT":     "3307",
-		"GC_DOLT_USER":     "root",
-		"GC_DOLT_PASSWORD": "",
-		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, map[string]string{
+		"BD_CALL_LOG": bdLog,
+		"GC_CITY":     "",
+	})
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	bdData, err := os.ReadFile(bdLog)
 	if err != nil {
@@ -2052,21 +1940,12 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"BEADS_DIR":        ambientBeadsDir,
-		"DOLT_ARGS_LOG":    doltLog,
-		"BD_CALL_LOG":      bdLog,
-		"GC_CALL_LOG":      gcLog,
-		"GC_CITY":          cityDir,
-		"GC_CITY_PATH":     cityDir,
-		"GC_DOLT_HOST":     "127.0.0.1",
-		"GC_DOLT_PORT":     "3307",
-		"GC_DOLT_USER":     "root",
-		"GC_DOLT_PASSWORD": "",
-		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, map[string]string{
+		"BD_CALL_LOG": bdLog,
+		"BEADS_DIR":   ambientBeadsDir,
+	})
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	bdData, err := os.ReadFile(bdLog)
 	if err != nil {
@@ -2125,21 +2004,12 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"DOLT_ARGS_LOG":           doltLog,
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, map[string]string{
 		"BD_CALL_LOG":             bdLog,
-		"GC_CALL_LOG":             gcLog,
-		"GC_CITY":                 cityDir,
-		"GC_CITY_PATH":            cityDir,
 		"GC_REAPER_CITY_DATABASE": "wrongdb",
-		"GC_DOLT_HOST":            "127.0.0.1",
-		"GC_DOLT_PORT":            "3307",
-		"GC_DOLT_USER":            "root",
-		"GC_DOLT_PASSWORD":        "",
-		"PATH":                    binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	})
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	bdData, err := os.ReadFile(bdLog)
 	if err != nil && !os.IsNotExist(err) {
@@ -2206,20 +2076,11 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"DOLT_ARGS_LOG":    doltLog,
-		"BD_CALL_LOG":      bdLog,
-		"GC_CALL_LOG":      gcLog,
-		"GC_CITY":          cityDir,
-		"GC_CITY_PATH":     cityDir,
-		"GC_DOLT_HOST":     "127.0.0.1",
-		"GC_DOLT_PORT":     "3307",
-		"GC_DOLT_USER":     "root",
-		"GC_DOLT_PASSWORD": "",
-		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, map[string]string{
+		"BD_CALL_LOG": bdLog,
+	})
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	bdData, err := os.ReadFile(bdLog)
 	if err != nil && !os.IsNotExist(err) {
@@ -2280,20 +2141,12 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"DOLT_ARGS_LOG":    doltLog,
-		"BD_CALL_LOG":      bdLog,
-		"GC_CALL_LOG":      gcLog,
-		"GC_CITY":          cityDir,
-		"GC_CITY_PATH":     cityDir,
-		"GC_DOLT_HOST":     "127.0.0.1",
-		"GC_DOLT_PORT":     "3307",
-		"GC_DOLT_USER":     "root",
-		"GC_DOLT_PASSWORD": "",
-		"PATH":             binDir,
-	}
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, map[string]string{
+		"BD_CALL_LOG": bdLog,
+		"PATH":        binDir,
+	})
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	bdData, err := os.ReadFile(bdLog)
 	if err != nil {
@@ -2357,20 +2210,11 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"DOLT_ARGS_LOG":    doltLog,
-		"BD_CALL_LOG":      bdLog,
-		"GC_CALL_LOG":      gcLog,
-		"GC_CITY":          cityDir,
-		"GC_CITY_PATH":     cityDir,
-		"GC_DOLT_HOST":     "127.0.0.1",
-		"GC_DOLT_PORT":     "3307",
-		"GC_DOLT_USER":     "root",
-		"GC_DOLT_PASSWORD": "",
-		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, map[string]string{
+		"BD_CALL_LOG": bdLog,
+	})
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	bdData, err := os.ReadFile(bdLog)
 	if err != nil && !os.IsNotExist(err) {
@@ -2427,20 +2271,11 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"DOLT_ARGS_LOG":    doltLog,
-		"BD_CALL_LOG":      bdLog,
-		"GC_CALL_LOG":      gcLog,
-		"GC_CITY":          cityDir,
-		"GC_CITY_PATH":     cityDir,
-		"GC_DOLT_HOST":     "127.0.0.1",
-		"GC_DOLT_PORT":     "3307",
-		"GC_DOLT_USER":     "root",
-		"GC_DOLT_PASSWORD": "",
-		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, map[string]string{
+		"BD_CALL_LOG": bdLog,
+	})
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	bdData, err := os.ReadFile(bdLog)
 	if err != nil && !os.IsNotExist(err) {
@@ -2502,19 +2337,9 @@ printf '%s\n' "$*" >> "$GC_CALL_LOG"
 exit 0
 `)
 
-	env := map[string]string{
-		"DOLT_ARGS_LOG":    doltLog,
-		"GC_CALL_LOG":      gcLog,
-		"GC_CITY":          cityDir,
-		"GC_CITY_PATH":     cityDir,
-		"GC_DOLT_HOST":     "127.0.0.1",
-		"GC_DOLT_PORT":     "3307",
-		"GC_DOLT_USER":     "root",
-		"GC_DOLT_PASSWORD": "",
-		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}
+	env := reaperTestEnv(cityDir, binDir, doltLog, gcLog, nil)
 
-	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+	runReaper(t, env)
 
 	gcData, err := os.ReadFile(gcLog)
 	if err != nil {
@@ -3044,6 +2869,29 @@ func runScript(t *testing.T, script string, env map[string]string) {
 	if err != nil {
 		t.Fatalf("%s failed: %v\n%s", filepath.Base(script), err, out)
 	}
+}
+
+func runReaper(t *testing.T, env map[string]string) {
+	t.Helper()
+	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+}
+
+func reaperTestEnv(cityDir, binDir, doltLog, gcLog string, overrides map[string]string) map[string]string {
+	env := map[string]string{
+		"DOLT_ARGS_LOG":    doltLog,
+		"GC_CALL_LOG":      gcLog,
+		"GC_CITY":          cityDir,
+		"GC_CITY_PATH":     cityDir,
+		"GC_DOLT_HOST":     "127.0.0.1",
+		"GC_DOLT_PORT":     "3307",
+		"GC_DOLT_USER":     "root",
+		"GC_DOLT_PASSWORD": "",
+		"PATH":             binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	for key, value := range overrides {
+		env[key] = value
+	}
+	return env
 }
 
 func runScriptResult(t *testing.T, script string, env map[string]string) ([]byte, error) {

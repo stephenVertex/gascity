@@ -166,6 +166,13 @@ validate_selected_tests() {
   fi
 }
 
+live_formulas_enabled() {
+  case "${TEST_LIVE_FORMULAS:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 run_packages_shard() {
   # Avoid bash 4 `mapfile` so this runs on macOS's stock bash 3.2.
   local -a packages=()
@@ -289,6 +296,51 @@ run_review_formulas_all() {
   exit "$status"
 }
 
+coverprofile_for_shard() {
+  local coverprofile="$1"
+  local shard_name="$2"
+  local coverbase="${coverprofile%.*}"
+  local coverext="${coverprofile##*.}"
+
+  if [[ "$coverbase" == "$coverprofile" ]]; then
+    printf '%s.%s' "$coverprofile" "$shard_name"
+  else
+    printf '%s.%s.%s' "$coverbase" "$shard_name" "$coverext"
+  fi
+}
+
+run_shard_group() {
+  local status=0 st=0 shard_name
+  local coverprofile="${GO_TEST_COVERPROFILE:-}"
+  local -a coverprofiles=()
+
+  for shard_name in "$@"; do
+    if [[ -n "$coverprofile" ]]; then
+      local shard_coverprofile
+      shard_coverprofile="$(coverprofile_for_shard "$coverprofile" "$shard_name")"
+      coverprofiles+=("$shard_coverprofile")
+      GO_TEST_COVERPROFILE="$shard_coverprofile" "$0" "$shard_name" || { st=$?; [[ $status -ne 0 ]] || status=$st; }
+    else
+      "$0" "$shard_name" || { st=$?; [[ $status -ne 0 ]] || status=$st; }
+    fi
+  done
+
+  if [[ -n "$coverprofile" && $status -eq 0 ]]; then
+    ./scripts/merge-coverprofiles "$coverprofile" "${coverprofiles[@]}"
+  fi
+  return "$status"
+}
+
+run_review_formulas_basic_all() {
+  run_shard_group review-formulas-basic-1-of-2 review-formulas-basic-2-of-2
+  exit "$?"
+}
+
+run_review_formulas_retries_all() {
+  run_shard_group review-formulas-retries-1-of-2 review-formulas-retries-2-of-2
+  exit "$?"
+}
+
 if [[ "$shard" =~ ^packages-core-([0-9]+)-of-([0-9]+)$ ]]; then
   run_packages_core_shard "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
   exit 0
@@ -329,11 +381,11 @@ case "$shard" in
     ;;
   review-formulas-basic)
     validate_selected_tests "${review_formulas_basic_tests[@]}"
-    run_pkg_tests "$pkg" "${review_formulas_basic_tests[@]}"
+    run_review_formulas_basic_all
     ;;
   review-formulas-retries)
     validate_selected_tests "${review_formulas_retry_tests[@]}"
-    run_pkg_tests "$pkg" "${review_formulas_retry_tests[@]}"
+    run_review_formulas_retries_all
     ;;
   review-formulas-recovery)
     validate_selected_tests "${review_formulas_recovery_tests[@]}"
@@ -354,9 +406,13 @@ case "$shard" in
     ;;
   all)
     "$0" packages
-    "$0" review-formulas-basic
-    "$0" review-formulas-retries
-    "$0" review-formulas-recovery
+    if live_formulas_enabled; then
+      "$0" review-formulas-basic
+      "$0" review-formulas-retries
+      "$0" review-formulas-recovery
+    else
+      echo "Skipping live formula integration shards; set TEST_LIVE_FORMULAS=1 to include them." >&2
+    fi
     "$0" bdstore
     "$0" rest-smoke
     "$0" rest-full

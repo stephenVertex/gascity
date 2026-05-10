@@ -396,6 +396,9 @@ func TestHumaBinary_CityCreateAsync(t *testing.T) {
 	}
 	// The city name is the basename of cityDir.
 	cityName := filepath.Base(cityDir)
+	t.Cleanup(func() {
+		cleanupHumaBinaryCity(t, baseURL, cityName)
+	})
 	t.Logf("POST /v0/city returned 202 in %s for city %q (request_id=%s)", postDur.Round(time.Millisecond), cityName, createResp.RequestID)
 
 	// 2. Subscribe to /v0/events/stream. No retry: Scaffold writes
@@ -613,38 +616,21 @@ ready:
 	t.Logf("city %q ready; issuing unregister", cityName)
 
 	// 3. POST /v0/city/{cityName}/unregister. Expect 202.
-	unregURL := baseURL + "/v0/city/" + cityName + "/unregister"
-	unregReq, err := http.NewRequestWithContext(ctx, http.MethodPost, unregURL, nil)
-	if err != nil {
-		t.Fatalf("build unregister request: %v", err)
+	if !prepareHumaBinaryCityForUnregister(t, baseURL, cityName) {
+		t.Fatalf("city %q disappeared before unregister", cityName)
 	}
-	unregReq.Header.Set("X-GC-Request", "true")
-	unregStart := time.Now()
-	unregResp, err := http.DefaultClient.Do(unregReq)
-	if err != nil {
-		t.Fatalf("POST unregister: %v", err)
-	}
-	unregDur := time.Since(unregStart)
-	unregBody, _ := io.ReadAll(unregResp.Body)
-	_ = unregResp.Body.Close()
-	if unregResp.StatusCode != http.StatusAccepted {
-		t.Fatalf("POST unregister status = %d, want 202; body: %s", unregResp.StatusCode, string(unregBody))
+	unregBodyDecoded, unregDur, ok := postHumaBinaryCityUnregister(t, baseURL, cityName, false)
+	if !ok {
+		t.Fatalf("city %q disappeared before unregister", cityName)
 	}
 	if unregDur > 20*time.Second {
 		t.Errorf("POST unregister took %s, want fast response (<20s)", unregDur)
 	}
-	var unregBodyDecoded struct {
-		RequestID   string `json:"request_id"`
-		EventCursor string `json:"event_cursor"`
-	}
-	if err := json.Unmarshal(unregBody, &unregBodyDecoded); err != nil {
-		t.Fatalf("decode unregister response: %v; body: %s", err, string(unregBody))
-	}
 	if unregBodyDecoded.RequestID == "" {
-		t.Errorf("unregister response missing request_id; body: %s", string(unregBody))
+		t.Errorf("unregister response missing request_id")
 	}
 	if unregBodyDecoded.EventCursor == "" {
-		t.Fatalf("unregister response missing event_cursor; body: %s", string(unregBody))
+		t.Fatalf("unregister response missing event_cursor")
 	}
 	t.Logf("POST unregister returned 202 in %s (request_id=%s)", unregDur.Round(time.Millisecond), unregBodyDecoded.RequestID)
 
@@ -818,6 +804,9 @@ func TestHumaBinary_SessionMessageAsync(t *testing.T) {
 	}
 	cityName := filepath.Base(cityDir)
 	cityBase := baseURL + "/v0/city/" + cityName
+	t.Cleanup(func() {
+		cleanupHumaBinaryCity(t, baseURL, cityName)
+	})
 
 	// 2. Subscribe to events and wait for city ready.
 	streamCtx, streamCancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -977,6 +966,177 @@ func waitForRequestResultFromStreamURL(t *testing.T, streamURL, requestID, succe
 	lines := make(chan string, 256)
 	go readSSEFrames(resp.Body, lines)
 	return waitForRequestResultOnStream(t, lines, requestID, successType, timeout)
+}
+
+func cleanupHumaBinaryCity(t *testing.T, baseURL, cityName string) {
+	t.Helper()
+	if !prepareHumaBinaryCityForUnregister(t, baseURL, cityName) {
+		return
+	}
+	accepted, _, ok := postHumaBinaryCityUnregister(t, baseURL, cityName, true)
+	if !ok {
+		return
+	}
+	waitForRequestResultFromStreamURL(t, baseURL+"/v0/events/stream?after_cursor="+url.QueryEscape(accepted.EventCursor), accepted.RequestID, "request.result.city.unregister", 120*time.Second)
+}
+
+func prepareHumaBinaryCityForUnregister(t *testing.T, baseURL, cityName string) bool {
+	t.Helper()
+	if !patchHumaBinaryCitySuspended(t, baseURL, cityName, true) {
+		return false
+	}
+	closeHumaBinaryCitySessions(t, baseURL, cityName)
+	return true
+}
+
+type humaBinaryAcceptedRequest struct {
+	RequestID   string `json:"request_id"`
+	EventCursor string `json:"event_cursor"`
+}
+
+func postHumaBinaryCityUnregister(t *testing.T, baseURL, cityName string, allowNotFound bool) (humaBinaryAcceptedRequest, time.Duration, bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v0/city/"+url.PathEscape(cityName)+"/unregister", nil)
+	if err != nil {
+		t.Fatalf("build unregister request for %q: %v", cityName, err)
+	}
+	req.Header.Set("X-GC-Request", "true")
+	start := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST unregister for %q: %v", cityName, err)
+	}
+	dur := time.Since(start)
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound && allowNotFound {
+		return humaBinaryAcceptedRequest{}, dur, false
+	}
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST unregister for %q status = %d, want 202; body: %s", cityName, resp.StatusCode, string(body))
+	}
+	var accepted humaBinaryAcceptedRequest
+	if err := json.Unmarshal(body, &accepted); err != nil {
+		t.Fatalf("decode unregister response for %q: %v; body: %s", cityName, err, string(body))
+	}
+	if accepted.RequestID == "" || accepted.EventCursor == "" {
+		t.Fatalf("unregister for %q returned incomplete response: %s", cityName, string(body))
+	}
+	return accepted, dur, true
+}
+
+func patchHumaBinaryCitySuspended(t *testing.T, baseURL, cityName string, suspended bool) bool {
+	t.Helper()
+	bodyBytes, err := json.Marshal(map[string]bool{"suspended": suspended})
+	if err != nil {
+		t.Fatalf("encode city suspend cleanup body: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, baseURL+"/v0/city/"+url.PathEscape(cityName), strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		t.Fatalf("build city suspend cleanup request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GC-Request", "true")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH city suspend cleanup for %q: %v", cityName, err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return false
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH city suspend cleanup for %q status = %d, want 200; body: %s", cityName, resp.StatusCode, string(body))
+	}
+	return true
+}
+
+func closeHumaBinaryCitySessions(t *testing.T, baseURL, cityName string) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		sessions, ok := listHumaBinaryCitySessions(t, baseURL, cityName)
+		if !ok {
+			return
+		}
+		remaining := 0
+		for _, sess := range sessions {
+			if sess.ID == "" || sess.State == "closed" {
+				continue
+			}
+			remaining++
+			closeHumaBinaryCitySession(t, baseURL, cityName, sess.ID)
+		}
+		if remaining == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out closing %d session(s) in city %q", remaining, cityName)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+type humaBinarySessionListItem struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+}
+
+func listHumaBinaryCitySessions(t *testing.T, baseURL, cityName string) ([]humaBinarySessionListItem, bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v0/city/"+url.PathEscape(cityName)+"/sessions?limit=100", nil)
+	if err != nil {
+		t.Fatalf("build session cleanup list request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET cleanup sessions for %q: %v", cityName, err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, false
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET cleanup sessions for %q status = %d, want 200; body: %s", cityName, resp.StatusCode, string(body))
+	}
+	var list struct {
+		Items []humaBinarySessionListItem `json:"items"`
+	}
+	if err := json.Unmarshal(body, &list); err != nil {
+		t.Fatalf("decode cleanup sessions for %q: %v; body: %s", cityName, err, string(body))
+	}
+	return list.Items, true
+}
+
+func closeHumaBinaryCitySession(t *testing.T, baseURL, cityName, sessionID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v0/city/"+url.PathEscape(cityName)+"/session/"+url.PathEscape(sessionID)+"/close?delete=true", nil)
+	if err != nil {
+		t.Fatalf("build session cleanup close request: %v", err)
+	}
+	req.Header.Set("X-GC-Request", "true")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST cleanup close for session %q in city %q: %v", sessionID, cityName, err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST cleanup close for session %q in city %q status = %d, want 200; body: %s", sessionID, cityName, resp.StatusCode, string(body))
+	}
 }
 
 // waitForRequestResultOnStream waits for a typed success event

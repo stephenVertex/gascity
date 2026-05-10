@@ -9,6 +9,7 @@ usage: scripts/test-local-parallel <fast|cmd-gc-process|integration|full>
 Environment:
   LOCAL_TEST_JOBS        max concurrent jobs (default: detected CPU count)
   CMD_GC_PROCESS_TOTAL  cmd/gc shard count (default: 6)
+  TEST_LIVE_FORMULAS    set to 1/true/yes/on to include live formula jobs
 USAGE
 }
 
@@ -39,6 +40,13 @@ if ! [[ "$cmd_gc_total" =~ ^[0-9]+$ && "$cmd_gc_total" -gt 0 ]]; then
   echo "CMD_GC_PROCESS_TOTAL must be a positive integer" >&2
   exit 1
 fi
+
+live_formulas_enabled() {
+  case "${TEST_LIVE_FORMULAS:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 gopath_val="$(go env GOPATH)"
 gocache_val="$(go env GOCACHE)"
@@ -79,6 +87,17 @@ add_cmd_gc_shards() {
   done
 }
 
+add_review_formula_jobs() {
+  local i
+  for i in 1 2; do
+    add_job "integration-review-formulas-basic-${i}-of-2" "./scripts/test-integration-shard review-formulas-basic-${i}-of-2"
+  done
+  for i in 1 2; do
+    add_job "integration-review-formulas-retries-${i}-of-2" "./scripts/test-integration-shard review-formulas-retries-${i}-of-2"
+  done
+  add_job "integration-review-formulas-recovery" "./scripts/test-integration-shard review-formulas-recovery"
+}
+
 add_integration_jobs() {
   local i
   for i in 1 2 3 4; do
@@ -90,13 +109,11 @@ add_integration_jobs() {
   for i in 1 2 3; do
     add_job "integration-packages-runtime-tmux-${i}-of-3" "./scripts/test-integration-shard packages-runtime-tmux-${i}-of-3"
   done
-  for i in 1 2; do
-    add_job "integration-review-formulas-basic-${i}-of-2" "./scripts/test-integration-shard review-formulas-basic-${i}-of-2"
-  done
-  for i in 1 2; do
-    add_job "integration-review-formulas-retries-${i}-of-2" "./scripts/test-integration-shard review-formulas-retries-${i}-of-2"
-  done
-  add_job "integration-review-formulas-recovery" "./scripts/test-integration-shard review-formulas-recovery"
+  if live_formulas_enabled; then
+    add_review_formula_jobs
+  else
+    echo "Skipping live formula integration jobs; set TEST_LIVE_FORMULAS=1 to include them." >&2
+  fi
   add_job "integration-bdstore" "./scripts/test-integration-shard bdstore"
   for i in 1 2; do
     add_job "integration-rest-smoke-${i}-of-2" "./scripts/test-integration-shard rest-smoke-${i}-of-2"

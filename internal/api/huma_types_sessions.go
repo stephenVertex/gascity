@@ -7,6 +7,7 @@ package api
 
 import (
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/internal/session"
 )
 
@@ -125,17 +126,17 @@ type SessionPermissionModeInput struct {
 	CityScope
 	ID   string `path:"id" doc:"Session ID, alias, or runtime session_name."`
 	Body struct {
-		PermissionMode string `json:"permission_mode" enum:"default,acceptEdits,plan,bypassPermissions" doc:"Canonical permission mode to apply to the running session."`
+		PermissionMode runtime.PermissionMode `json:"permission_mode" enum:"default,acceptEdits,plan,bypassPermissions" doc:"Canonical permission mode to apply to the running session."`
 	}
 }
 
 // SessionPermissionModeOutput is the Huma output for POST /v0/city/{cityName}/session/{id}/permission-mode.
 type SessionPermissionModeOutput struct {
 	Body struct {
-		ID             string `json:"id" doc:"Session ID."`
-		PermissionMode string `json:"permission_mode" enum:"default,acceptEdits,plan,bypassPermissions" doc:"Confirmed canonical permission mode."`
-		ModeVersion    uint64 `json:"mode_version" doc:"Monotonically increasing session permission mode version."`
-		Verified       bool   `json:"verified" doc:"Whether the provider verified the mode after applying it."`
+		ID             string                 `json:"id" doc:"Session ID."`
+		PermissionMode runtime.PermissionMode `json:"permission_mode" enum:"default,acceptEdits,plan,bypassPermissions" doc:"Confirmed canonical permission mode."`
+		ModeVersion    uint64                 `json:"mode_version" doc:"Monotonically increasing session permission mode version."`
+		Verified       bool                   `json:"verified" doc:"Whether the provider verified the mode after applying it."`
 	}
 }
 

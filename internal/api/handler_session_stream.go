@@ -48,6 +48,37 @@ type sessionStreamActivityPayload struct {
 	ModeVersion    uint64 `json:"mode_version,omitempty"`
 }
 
+func (s *Server) emitSessionPermissionModeActivitySSE(
+	w http.ResponseWriter,
+	info session.Info,
+	tracker *sessionPermissionModeStreamTracker,
+	seq *uint64,
+	activity string,
+) {
+	payload, ok := s.nextSessionPermissionModeActivityPayload(info, tracker, activity)
+	if !ok {
+		return
+	}
+	*seq++
+	actData, _ := json.Marshal(payload)
+	writeSSE(w, "activity", *seq, actData)
+}
+
+func (s *Server) emitSessionPermissionModeActivityHuma(
+	send sse.Sender,
+	info session.Info,
+	tracker *sessionPermissionModeStreamTracker,
+	seq *int,
+	activity string,
+) {
+	event, ok := s.nextSessionPermissionModeActivityEvent(info, tracker, activity)
+	if !ok {
+		return
+	}
+	*seq++
+	_ = send(sse.Message{ID: *seq, Data: event})
+}
+
 type syntheticContentBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
@@ -544,21 +575,7 @@ func (s *Server) streamSessionPeekRaw(ctx context.Context, w http.ResponseWriter
 	var lastOutput string
 	var seq uint64
 	var lastPeekPendingID string
-	var lastMode string
-	var lastModeVersion uint64
-
-	emitModeIfChanged := func() bool {
-		snapshot := s.sessionPermissionModeSnapshot(info)
-		if !snapshot.Known || (snapshot.Mode == lastMode && snapshot.Version == lastModeVersion) {
-			return false
-		}
-		lastMode = snapshot.Mode
-		lastModeVersion = snapshot.Version
-		seq++
-		actData, _ := json.Marshal(s.sessionStreamActivityPayload(info, "idle"))
-		writeSSE(w, "activity", seq, actData)
-		return true
-	}
+	var modeTracker sessionPermissionModeStreamTracker
 
 	emitPending := func() {
 		pending, pErr := handle.Pending(ctx)
@@ -578,7 +595,7 @@ func (s *Server) streamSessionPeekRaw(ctx context.Context, w http.ResponseWriter
 			return
 		}
 		if err != nil {
-			emitModeIfChanged()
+			s.emitSessionPermissionModeActivitySSE(w, info, &modeTracker, &seq, "idle")
 			return
 		}
 		if output != lastOutput {
@@ -603,7 +620,7 @@ func (s *Server) streamSessionPeekRaw(ctx context.Context, w http.ResponseWriter
 				}
 			}
 		} else {
-			emitModeIfChanged()
+			s.emitSessionPermissionModeActivitySSE(w, info, &modeTracker, &seq, "idle")
 		}
 		emitPending()
 	}
@@ -638,20 +655,7 @@ func (s *Server) streamSessionPeek(ctx context.Context, w http.ResponseWriter, i
 	var lastOutput string
 	var seq uint64
 
-	var lastMode string
-	var lastModeVersion uint64
-	emitModeIfChanged := func() bool {
-		snapshot := s.sessionPermissionModeSnapshot(info)
-		if !snapshot.Known || (snapshot.Mode == lastMode && snapshot.Version == lastModeVersion) {
-			return false
-		}
-		lastMode = snapshot.Mode
-		lastModeVersion = snapshot.Version
-		seq++
-		actData, _ := json.Marshal(s.sessionStreamActivityPayload(info, "idle"))
-		writeSSE(w, "activity", seq, actData)
-		return true
-	}
+	var modeTracker sessionPermissionModeStreamTracker
 
 	emitPeek := func() {
 		output, err := handle.Peek(ctx, 100)
@@ -659,7 +663,7 @@ func (s *Server) streamSessionPeek(ctx context.Context, w http.ResponseWriter, i
 			return
 		}
 		if err != nil || output == lastOutput {
-			emitModeIfChanged()
+			s.emitSessionPermissionModeActivitySSE(w, info, &modeTracker, &seq, "idle")
 			return
 		}
 		lastOutput = output
@@ -1012,20 +1016,7 @@ func (s *Server) streamSessionPeekRawHuma(ctx context.Context, send sse.Sender, 
 	var lastOutput string
 	var seq int
 	var lastPendingID string
-	var lastMode string
-	var lastModeVersion uint64
-
-	emitModeIfChanged := func() bool {
-		snapshot := s.sessionPermissionModeSnapshot(info)
-		if !snapshot.Known || (snapshot.Mode == lastMode && snapshot.Version == lastModeVersion) {
-			return false
-		}
-		lastMode = snapshot.Mode
-		lastModeVersion = snapshot.Version
-		seq++
-		_ = send(sse.Message{ID: seq, Data: s.sessionActivityEvent(info, "idle")})
-		return true
-	}
+	var modeTracker sessionPermissionModeStreamTracker
 
 	emitPending := func() {
 		pending, err := handle.Pending(ctx)
@@ -1044,7 +1035,7 @@ func (s *Server) streamSessionPeekRawHuma(ctx context.Context, send sse.Sender, 
 			return
 		}
 		if err != nil || output == lastOutput {
-			emitModeIfChanged()
+			s.emitSessionPermissionModeActivityHuma(send, info, &modeTracker, &seq, "idle")
 			emitPending()
 			return
 		}
@@ -1109,20 +1100,7 @@ func (s *Server) streamSessionPeekHuma(ctx context.Context, send sse.Sender, inf
 
 	var lastOutput string
 	var seq int
-	var lastMode string
-	var lastModeVersion uint64
-
-	emitModeIfChanged := func() bool {
-		snapshot := s.sessionPermissionModeSnapshot(info)
-		if !snapshot.Known || (snapshot.Mode == lastMode && snapshot.Version == lastModeVersion) {
-			return false
-		}
-		lastMode = snapshot.Mode
-		lastModeVersion = snapshot.Version
-		seq++
-		_ = send(sse.Message{ID: seq, Data: s.sessionActivityEvent(info, "idle")})
-		return true
-	}
+	var modeTracker sessionPermissionModeStreamTracker
 
 	emitPeek := func() {
 		output, err := handle.Peek(ctx, 100)
@@ -1130,7 +1108,7 @@ func (s *Server) streamSessionPeekHuma(ctx context.Context, send sse.Sender, inf
 			return
 		}
 		if err != nil || output == lastOutput {
-			emitModeIfChanged()
+			s.emitSessionPermissionModeActivityHuma(send, info, &modeTracker, &seq, "idle")
 			return
 		}
 		lastOutput = output

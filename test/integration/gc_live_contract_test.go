@@ -86,7 +86,7 @@ func TestGCLiveContract_BeadsAndEvents(t *testing.T) {
 		EventCursor string `json:"event_cursor"`
 	}](t, baseURL, validator, http.MethodPost, "/v0/city", map[string]string{
 		"dir":           cityDir,
-		"start_command": "bash " + agentScript("stuck-agent.sh"),
+		"start_command": "true",
 	}, http.StatusAccepted)
 	if createCity.RequestID == "" {
 		t.Fatalf("city create response missing request_id")
@@ -140,7 +140,7 @@ func TestGCLiveContract_BeadsAndEvents(t *testing.T) {
 	}](t, baseURL, validator, http.MethodPost, cityBase+"/providers", map[string]any{
 		"name":        "contract-agent",
 		"command":     "bash",
-		"args":        []string{agentScript("stuck-agent.sh")},
+		"args":        liveContractIdleAgentArgs(),
 		"prompt_mode": "none",
 	}, http.StatusCreated)
 	liveContractJSON[struct {
@@ -261,7 +261,7 @@ description = "Read and complete {{issue}}."
 		"vars":       map[string]string{"issue": rootBead.ID},
 	}, http.StatusOK)
 	exerciseLiveContractFormulasAndWorkflows(t, baseURL, validator, cityBase, formulaName, targetAgent, rigName, rootBead.ID, runID)
-	exerciseLiveContractOrders(t, baseURL, validator, cityBase, rigName, rootBead.ID, runID)
+	orderScopedName, orderRunID := exerciseLiveContractOrders(t, baseURL, validator, cityBase, rigName, rootBead.ID, runID)
 
 	lifecycleBead := liveContractJSON[beads.Bead](t, baseURL, validator, http.MethodPost, cityBase+"/beads", map[string]any{
 		"description": "Lifecycle fixture created by TestGCLiveContract_BeadsAndEvents",
@@ -471,9 +471,7 @@ description = "Read and complete {{issue}}."
 	liveContractJSON[struct {
 		Status string `json:"status"`
 	}](t, baseURL, validator, http.MethodDelete, mailPath+mailRigQuery, nil, http.StatusOK)
-	liveContractJSON[struct {
-		Status string `json:"status"`
-	}](t, baseURL, validator, http.MethodPost, cityBase+"/session/"+url.PathEscape(sessionID)+"/close?delete=true", nil, http.StatusOK)
+	extMsgConversation := exerciseLiveContractExtMsg(t, baseURL, validator, cityBase, cityName, sessionID, runID)
 
 	exerciseLiveContractSessionLifecycle(t, baseURL, validator, cityBase, targetAgent, rigName, runID)
 
@@ -491,47 +489,29 @@ description = "Read and complete {{issue}}."
 	if cityEvents.Total == 0 {
 		t.Fatalf("GET %s/events?limit=50 returned no events", cityBase)
 	}
-	runLiveContractReadSweep(t, baseURL, validator, specBytes, cityName, rigName)
+	runLiveContractReadSweep(t, baseURL, validator, specBytes, liveContractReadFixtures{
+		cityName:           cityName,
+		rigName:            rigName,
+		orderScopedName:    orderScopedName,
+		bindingSessionID:   sessionID,
+		extMsgConversation: extMsgConversation,
+	})
+	killAndCloseLiveContractSession(t, baseURL, validator, cityBase+"/session/"+url.PathEscape(sessionID))
 
-	for _, id := range []string{idempotentBead.ID, lifecycleBead.ID, siblingBead.ID, childBead.ID, rootBead.ID} {
+	for _, id := range []string{idempotentBead.ID, lifecycleBead.ID, siblingBead.ID, childBead.ID, rootBead.ID, orderRunID} {
 		liveContractJSON[struct {
 			Status string `json:"status"`
 		}](t, baseURL, validator, http.MethodDelete, cityBase+"/bead/"+url.PathEscape(id), nil, http.StatusOK)
 	}
-	liveContractJSON[struct {
-		Status string `json:"status"`
-	}](t, baseURL, validator, http.MethodPatch, cityBase, map[string]bool{"suspended": true}, http.StatusOK)
-	closeLiveContractRigSessions(t, baseURL, validator, cityBase, rigName)
-	liveContractJSON[struct {
-		Status string `json:"status"`
-	}](t, baseURL, validator, http.MethodPatch, cityBase, map[string]bool{"suspended": false}, http.StatusOK)
-	liveContractJSON[struct {
-		Status string `json:"status"`
-	}](t, baseURL, validator, http.MethodDelete, cityBase+"/rig/"+url.PathEscape(rigName), nil, http.StatusOK)
-
-	unregister := liveContractJSON[struct {
-		RequestID   string `json:"request_id"`
-		EventCursor string `json:"event_cursor"`
-	}](t, baseURL, validator, http.MethodPost, cityBase+"/unregister", nil, http.StatusAccepted)
-	if unregister.RequestID == "" {
-		t.Fatalf("unregister response missing request_id")
-	}
-	if unregister.EventCursor == "" {
-		t.Fatalf("unregister response missing event_cursor")
-	}
-	waitForLiveContractRequestID[struct {
-		RequestID string `json:"request_id"`
-		Name      string `json:"name"`
-		Path      string `json:"path"`
-	}](t, baseURL, validator, "/v0/events", unregister.RequestID, "request.result.city.unregister", 120*time.Second, unregister.EventCursor)
-	waitForCityAbsent(t, baseURL, validator, cityName, 45*time.Second)
+	unregisterLiveContractCity(t, baseURL, validator, cityName, cityBase, func() {
+		liveContractJSON[struct {
+			Status string `json:"status"`
+		}](t, baseURL, validator, http.MethodDelete, cityBase+"/rig/"+url.PathEscape(rigName), nil, http.StatusOK)
+	})
 }
 
-func TestGCLiveContract_SessionPermissionMode(t *testing.T) {
-	tmuxtest.RequireTmux(t)
-
+func TestGCLiveContract_SessionMessageAcceptedEvents(t *testing.T) {
 	bin := buildGCBinary(t)
-	modeAgent := buildLiveContractPermissionModeAgent(t)
 
 	root := shortTempDir(t)
 	gcHome := filepath.Join(root, "home")
@@ -548,9 +528,7 @@ func TestGCLiveContract_SessionPermissionMode(t *testing.T) {
 	writeSupervisorConfig(t, gcHome, port)
 
 	baseURL := "http://127.0.0.1:" + strconv.Itoa(port)
-	env := integrationEnvFor(gcHome, runtimeDir, true)
-	env = filterEnv(env, "GC_SESSION")
-	env = append(env, "GC_SESSION=tmux")
+	env := append(integrationEnvFor(gcHome, runtimeDir, true), "GC_SESSION=subprocess")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -580,16 +558,18 @@ func TestGCLiveContract_SessionPermissionMode(t *testing.T) {
 	assertLiveContractRequiredOperations(t, specBytes)
 	validator := liveContractValidator(t, specBytes)
 
-	guard := tmuxtest.NewGuard(t)
-	cityName := guard.CityName()
+	cityName := "session-message-contract-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	cityDir := filepath.Join(root, "cities", cityName)
 	createCity := liveContractJSON[struct {
 		RequestID   string `json:"request_id"`
 		EventCursor string `json:"event_cursor"`
 	}](t, baseURL, validator, http.MethodPost, "/v0/city", map[string]string{
 		"dir":           cityDir,
-		"start_command": modeAgent,
+		"start_command": "true",
 	}, http.StatusAccepted)
+	if createCity.RequestID == "" || createCity.EventCursor == "" {
+		t.Fatalf("city create response = %+v, want request_id and event_cursor", createCity)
+	}
 	waitForLiveContractRequestID[struct {
 		RequestID string `json:"request_id"`
 		Name      string `json:"name"`
@@ -608,7 +588,7 @@ func TestGCLiveContract_SessionPermissionMode(t *testing.T) {
 	}](t, baseURL, validator, http.MethodPost, cityBase+"/rigs", map[string]string{
 		"name":   rigName,
 		"path":   rigDir,
-		"prefix": "pm" + strconv.FormatInt(time.Now().UnixNano(), 36),
+		"prefix": "sm" + strconv.FormatInt(time.Now().UnixNano(), 36),
 	}, http.StatusCreated)
 	waitForLiveContractRig(t, baseURL, validator, cityBase, rigName, rigDir, 30*time.Second)
 
@@ -616,145 +596,162 @@ func TestGCLiveContract_SessionPermissionMode(t *testing.T) {
 		Status   string `json:"status"`
 		Provider string `json:"provider"`
 	}](t, baseURL, validator, http.MethodPost, cityBase+"/providers", map[string]any{
-		"name":           "claude",
-		"command":        modeAgent,
-		"prompt_mode":    "none",
-		"ready_delay_ms": 100,
-		"env": map[string]string{
-			"GC_PERMISSION_MODE_INITIAL": "unrestricted",
-		},
-	}, http.StatusCreated)
-	liveContractJSON[struct {
-		Status   string `json:"status"`
-		Provider string `json:"provider"`
-	}](t, baseURL, validator, http.MethodPost, cityBase+"/providers", map[string]any{
-		"name":        "plain-agent",
-		"command":     modeAgent,
+		"name":        "contract-agent",
+		"command":     "bash",
+		"args":        liveContractIdleAgentArgs(),
 		"prompt_mode": "none",
 	}, http.StatusCreated)
-
 	liveContractJSON[struct {
 		Status string `json:"status"`
 		Agent  string `json:"agent"`
 	}](t, baseURL, validator, http.MethodPost, cityBase+"/agents", map[string]string{
 		"name":     "worker",
 		"dir":      rigName,
-		"provider": "claude",
-	}, http.StatusCreated)
-	liveContractJSON[struct {
-		Status string `json:"status"`
-		Agent  string `json:"agent"`
-	}](t, baseURL, validator, http.MethodPost, cityBase+"/agents", map[string]string{
-		"name":     "limited",
-		"dir":      rigName,
-		"provider": "plain-agent",
+		"provider": "contract-agent",
 	}, http.StatusCreated)
 	targetAgent := rigName + "/worker"
-	unsupportedAgent := rigName + "/limited"
 	waitForLiveContractAgent(t, baseURL, validator, cityBase, targetAgent, 30*time.Second)
-	waitForLiveContractAgent(t, baseURL, validator, cityBase, unsupportedAgent, 30*time.Second)
 
 	runID := strconv.FormatInt(time.Now().UnixNano(), 36)
-	sessionID := createLiveContractAgentSession(t, baseURL, validator, cityBase, targetAgent, rigName, "permission-"+runID)
+	sessionID := createLiveContractAgentSession(t, baseURL, validator, cityBase, targetAgent, rigName, "accepted-message-"+runID)
 	sessionPath := cityBase + "/session/" + url.PathEscape(sessionID)
-	initial := waitForLiveContractPermissionMode(t, baseURL, validator, sessionPath, "bypassPermissions", 30*time.Second)
-	if !initial.Capabilities.PermissionMode.Supported || !initial.Capabilities.PermissionMode.Readable || !initial.Capabilities.PermissionMode.LiveSwitch {
-		t.Fatalf("initial permission capability = %+v, want supported readable live_switch", initial.Capabilities.PermissionMode)
-	}
-	if !stringListContains(initial.Capabilities.PermissionMode.Values, "acceptEdits") {
-		t.Fatalf("initial permission values = %v, want acceptEdits", initial.Capabilities.PermissionMode.Values)
-	}
-	if initial.ModeVersion != 0 {
-		t.Fatalf("initial mode_version = %d, want zero before mutation", initial.ModeVersion)
-	}
-
-	listBefore := liveContractJSON[struct {
-		Items []contractSessionPermissionResponse `json:"items"`
-	}](t, baseURL, validator, http.MethodGet, cityBase+"/sessions?limit=100", nil, http.StatusOK)
-	assertLiveContractSessionListMode(t, listBefore.Items, sessionID, "bypassPermissions", 0)
-
-	streamInitial := readLiveContractSessionStreamMessage(t, baseURL, sessionPath+"/stream?format=raw", 10*time.Second)
-	if streamInitial.PermissionMode != "bypassPermissions" {
-		t.Fatalf("initial stream permission_mode = %q, want bypassPermissions; event=%s", streamInitial.PermissionMode, streamInitial.Raw)
-	}
-	if streamInitial.ModeVersion != 0 {
-		t.Fatalf("initial stream mode_version = %d, want zero; event=%s", streamInitial.ModeVersion, streamInitial.Raw)
-	}
-
-	eventSeqBeforeUpdate := liveContractEventHeadSeq(t, baseURL, validator, cityBase+"/events?limit=50")
-	updated := liveContractJSON[struct {
-		ID             string `json:"id"`
-		PermissionMode string `json:"permission_mode"`
-		ModeVersion    uint64 `json:"mode_version"`
-		Verified       bool   `json:"verified"`
-	}](t, baseURL, validator, http.MethodPost, sessionPath+"/permission-mode", map[string]string{
-		"permission_mode": "acceptEdits",
-	}, http.StatusOK)
-	if updated.ID != sessionID || updated.PermissionMode != "acceptEdits" || !updated.Verified || updated.ModeVersion == 0 {
-		t.Fatalf("permission mode update = %+v, want confirmed acceptEdits with version", updated)
+	for i := 0; i < 5; i++ {
+		accepted := liveContractJSON[struct {
+			RequestID   string `json:"request_id"`
+			EventCursor string `json:"event_cursor"`
+		}](t, baseURL, validator, http.MethodPost, sessionPath+"/messages", map[string]string{
+			"message": fmt.Sprintf("accepted message %d for %s", i, runID),
+		}, http.StatusAccepted)
+		if accepted.RequestID == "" || accepted.EventCursor == "" {
+			t.Fatalf("message %d accepted response = %+v, want request_id and event_cursor", i, accepted)
+		}
+		event := waitForLiveContractRequestEvent(t, baseURL, cityBase+"/events", accepted.RequestID, "request.result.session.message", 120*time.Second, accepted.EventCursor)
+		assertLiveContractEventAfterCursor(t, event, accepted.EventCursor)
+		var payload struct {
+			RequestID string `json:"request_id"`
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("message %d result payload did not decode: %v; payload=%s", i, err, string(event.Payload))
+		}
+		if payload.RequestID != accepted.RequestID || payload.SessionID != sessionID {
+			t.Fatalf("message %d result payload = %+v, want request_id=%q session_id=%q", i, payload, accepted.RequestID, sessionID)
+		}
 	}
 
-	event := waitForLiveContractStreamEvent(t, baseURL, cityBase+"/events/stream?after_seq="+strconv.FormatUint(eventSeqBeforeUpdate, 10), func(event contractEvent) bool {
-		if event.Type != "session.updated" || event.Subject != sessionID {
+	missing := liveContractJSON[struct {
+		RequestID   string `json:"request_id"`
+		EventCursor string `json:"event_cursor"`
+	}](t, baseURL, validator, http.MethodPost, cityBase+"/session/"+url.PathEscape("missing-"+runID)+"/messages", map[string]string{
+		"message": "accepted missing-target message for " + runID,
+	}, http.StatusAccepted)
+	if missing.RequestID == "" || missing.EventCursor == "" {
+		t.Fatalf("missing-target accepted response = %+v, want request_id and event_cursor", missing)
+	}
+	failed := waitForLiveContractStreamEvent(t, baseURL, cityBase+"/events/stream?after_seq="+url.QueryEscape(missing.EventCursor), func(event contractEvent) bool {
+		if event.Type != "request.failed" || liveContractEventPayloadRequestID(event.Payload) != missing.RequestID {
 			return false
 		}
 		var payload struct {
-			PermissionMode string `json:"permission_mode"`
-			ModeVersion    uint64 `json:"mode_version"`
+			Operation string `json:"operation"`
 		}
-		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			return false
-		}
-		return payload.PermissionMode == "acceptEdits" && payload.ModeVersion == updated.ModeVersion
+		return json.Unmarshal(event.Payload, &payload) == nil && payload.Operation == "session.message"
 	}, 30*time.Second)
-	if event.Seq == 0 {
-		t.Fatalf("session.updated event missing sequence: %+v", event)
+	assertLiveContractEventAfterCursor(t, failed, missing.EventCursor)
+
+	killAndCloseLiveContractSession(t, baseURL, validator, sessionPath)
+	unregisterLiveContractCity(t, baseURL, validator, cityName, cityBase, nil)
+}
+
+func TestGCLiveContract_LiveClaudePermissionModeEndpoint(t *testing.T) {
+	requireCommandOnPath(t, "tmux")
+	claudePath := requireCommandOnPath(t, "claude")
+	versionCtx, versionCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer versionCancel()
+	versionCmd := exec.CommandContext(versionCtx, claudePath, "--version")
+	if out, err := versionCmd.CombinedOutput(); err != nil {
+		t.Fatalf("claude --version failed: %v\n%s", err, string(out))
 	}
 
-	detail := waitForLiveContractPermissionMode(t, baseURL, validator, sessionPath, "acceptEdits", 30*time.Second)
-	if detail.ModeVersion != updated.ModeVersion {
-		t.Fatalf("detail mode_version = %d, want %d", detail.ModeVersion, updated.ModeVersion)
-	}
-	listAfter := liveContractJSON[struct {
-		Items []contractSessionPermissionResponse `json:"items"`
-	}](t, baseURL, validator, http.MethodGet, cityBase+"/sessions?limit=100", nil, http.StatusOK)
-	assertLiveContractSessionListMode(t, listAfter.Items, sessionID, "acceptEdits", updated.ModeVersion)
+	bin := buildGCBinary(t)
+	supervisor := startLiveContractSupervisor(t, bin, "tmux")
+	root := supervisor.Root
+	baseURL := supervisor.BaseURL
+	validator := supervisor.Validator
 
-	streamAfter := readLiveContractSessionStreamMessage(t, baseURL, sessionPath+"/stream?format=raw", 10*time.Second)
-	if streamAfter.PermissionMode != "acceptEdits" || streamAfter.ModeVersion != updated.ModeVersion {
-		t.Fatalf("updated stream event = %s, want acceptEdits version %d", streamAfter.Raw, updated.ModeVersion)
+	guard := tmuxtest.NewGuard(t)
+	cityName := guard.CityName()
+	cityDir := filepath.Join(root, "cities", cityName)
+	createCity := liveContractJSON[struct {
+		RequestID   string `json:"request_id"`
+		EventCursor string `json:"event_cursor"`
+	}](t, baseURL, validator, http.MethodPost, "/v0/city", map[string]string{
+		"dir":           cityDir,
+		"start_command": "true",
+	}, http.StatusAccepted)
+	waitForLiveContractRequestID[struct {
+		RequestID string `json:"request_id"`
+		Name      string `json:"name"`
+		Path      string `json:"path"`
+	}](t, baseURL, validator, "/v0/events", createCity.RequestID, "request.result.city.create", 300*time.Second, createCity.EventCursor)
+
+	cityBase := "/v0/city/" + url.PathEscape(cityName)
+
+	liveContractJSON[struct {
+		Status   string `json:"status"`
+		Provider string `json:"provider"`
+	}](t, baseURL, validator, http.MethodPost, cityBase+"/providers", map[string]any{
+		"name":           "live-provider",
+		"base":           "builtin:claude",
+		"command":        claudePath,
+		"prompt_mode":    "none",
+		"ready_delay_ms": 10000,
+	}, http.StatusCreated)
+
+	runID := strconv.FormatInt(time.Now().UnixNano(), 36)
+	sessionID := createLiveContractProviderSession(t, baseURL, validator, cityBase, "live-provider", "live-claude-permission-"+runID)
+	sessionPath := cityBase + "/session/" + url.PathEscape(sessionID)
+	initial := waitForLiveContractPermissionMode(t, baseURL, validator, sessionPath, "bypassPermissions", 90*time.Second)
+	if !initial.Capabilities.PermissionMode.Supported || !initial.Capabilities.PermissionMode.Readable || !initial.Capabilities.PermissionMode.LiveSwitch {
+		t.Fatalf("initial live permission capability = %+v, want supported readable live_switch", initial.Capabilities.PermissionMode)
+	}
+	if got := initial.Options[permissionModeJSONKey()]; got != "bypassPermissions" {
+		t.Fatalf("initial live permission mode = %q, want bypassPermissions", got)
+	}
+	for _, mode := range []string{"default", "acceptEdits", "plan", "bypassPermissions"} {
+		if !stringListContains(initial.Capabilities.PermissionMode.Values, mode) {
+			t.Fatalf("initial live permission values = %v, want %s", initial.Capabilities.PermissionMode.Values, mode)
+		}
+	}
+	assertLiveContractPermissionModeSurfaces(t, baseURL, validator, cityBase, sessionPath, sessionID, "bypassPermissions", initial.ModeVersion, 20*time.Second)
+
+	previousVersion := initial.ModeVersion
+	for _, mode := range []string{"acceptEdits", "plan", "default", "bypassPermissions"} {
+		updated := switchLiveContractPermissionMode(t, baseURL, validator, cityBase, sessionPath, sessionID, mode, previousVersion, mode == "acceptEdits" || mode == "plan", 60*time.Second)
+		assertLiveContractPermissionModeSurfaces(t, baseURL, validator, cityBase, sessionPath, sessionID, mode, updated.ModeVersion, 20*time.Second)
+		previousVersion = updated.ModeVersion
 	}
 
-	unsupportedID := createLiveContractAgentSession(t, baseURL, validator, cityBase, unsupportedAgent, rigName, "permission-unsupported-"+runID)
+	liveContractJSON[struct {
+		Status   string `json:"status"`
+		Provider string `json:"provider"`
+	}](t, baseURL, validator, http.MethodPost, cityBase+"/providers", map[string]any{
+		"name":        "plain-provider",
+		"command":     "bash",
+		"args":        liveContractIdleAgentArgs(),
+		"prompt_mode": "none",
+	}, http.StatusCreated)
+	unsupportedID := createLiveContractProviderSession(t, baseURL, validator, cityBase, "plain-provider", "permission-unsupported-"+runID)
 	unsupportedPath := cityBase + "/session/" + url.PathEscape(unsupportedID)
 	unsupported := waitForLiveContractUnsupportedPermissionMode(t, baseURL, validator, unsupportedPath, 30*time.Second)
-	if unsupported.Capabilities.PermissionMode.Supported {
-		t.Fatalf("unsupported capability = %+v, want supported=false", unsupported.Capabilities.PermissionMode)
-	}
-	if unsupported.Capabilities.PermissionMode.Reason == "" {
-		t.Fatalf("unsupported capability missing reason: %+v", unsupported.Capabilities.PermissionMode)
+	if unsupported.Capabilities.PermissionMode.Supported || unsupported.Capabilities.PermissionMode.LiveSwitch || len(unsupported.Capabilities.PermissionMode.Values) != 0 {
+		t.Fatalf("unsupported capability = %+v, want explicit unsupported without live switch values", unsupported.Capabilities.PermissionMode)
 	}
 	liveContractRequest(t, baseURL, validator, http.MethodPost, unsupportedPath+"/permission-mode", map[string]string{
 		"permission_mode": "plan",
 	}, http.StatusNotImplemented)
 
-	liveContractJSON[struct {
-		Status string `json:"status"`
-	}](t, baseURL, validator, http.MethodPost, sessionPath+"/close?delete=true", nil, http.StatusOK)
-	liveContractJSON[struct {
-		Status string `json:"status"`
-	}](t, baseURL, validator, http.MethodPost, unsupportedPath+"/close?delete=true", nil, http.StatusOK)
-
-	unregister := liveContractJSON[struct {
-		RequestID   string `json:"request_id"`
-		EventCursor string `json:"event_cursor"`
-	}](t, baseURL, validator, http.MethodPost, cityBase+"/unregister", nil, http.StatusAccepted)
-	waitForLiveContractRequestID[struct {
-		RequestID string `json:"request_id"`
-		Name      string `json:"name"`
-		Path      string `json:"path"`
-	}](t, baseURL, validator, "/v0/events", unregister.RequestID, "request.result.city.unregister", 120*time.Second, unregister.EventCursor)
-	waitForCityAbsent(t, baseURL, validator, cityName, 45*time.Second)
+	unregisterLiveContractCity(t, baseURL, validator, cityName, cityBase, nil)
 }
 
 type contractEventList struct {
@@ -791,6 +788,77 @@ type contractSessionStreamMessage struct {
 	PermissionMode string
 	ModeVersion    uint64
 	Raw            string
+}
+
+type contractPermissionModeUpdate struct {
+	ID             string `json:"id"`
+	PermissionMode string `json:"permission_mode"`
+	ModeVersion    uint64 `json:"mode_version"`
+	Verified       bool   `json:"verified"`
+}
+
+type liveContractSupervisorFixture struct {
+	Root      string
+	BaseURL   string
+	Validator openapivalidator.Validator
+	SpecBytes []byte
+}
+
+func startLiveContractSupervisor(t *testing.T, bin, sessionProvider string) liveContractSupervisorFixture {
+	t.Helper()
+
+	root := shortTempDir(t)
+	gcHome := filepath.Join(root, "home")
+	runtimeDir := filepath.Join(root, "run")
+	for _, dir := range []string{gcHome, runtimeDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := seedDoltIdentityForRoot(gcHome); err != nil {
+		t.Fatalf("seed dolt identity: %v", err)
+	}
+	port := reserveFreePort(t)
+	writeSupervisorConfig(t, gcHome, port)
+
+	baseURL := "http://127.0.0.1:" + strconv.Itoa(port)
+	env := integrationEnvFor(gcHome, runtimeDir, true)
+	if strings.TrimSpace(sessionProvider) != "" {
+		env = filterEnv(env, "GC_SESSION")
+		env = append(env, "GC_SESSION="+sessionProvider)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	cmd := exec.CommandContext(ctx, bin, "supervisor", "run")
+	cmd.Env = env
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start supervisor: %v", err)
+	}
+	var supervisorLog strings.Builder
+	go func() { _, _ = io.Copy(&supervisorLog, stderr) }()
+	t.Cleanup(func() {
+		cancel()
+		_ = cmd.Wait()
+		if t.Failed() {
+			t.Logf("supervisor stderr:\n%s", supervisorLog.String())
+		}
+	})
+
+	waitHTTP(t, baseURL+"/health", 10*time.Second)
+	specBytes := liveContractRequest(t, baseURL, nil, http.MethodGet, "/openapi.json", nil, http.StatusOK)
+	assertLiveContractSpec(t, specBytes)
+	assertLiveContractRequiredOperations(t, specBytes)
+	return liveContractSupervisorFixture{
+		Root:      root,
+		BaseURL:   baseURL,
+		Validator: liveContractValidator(t, specBytes),
+		SpecBytes: specBytes,
+	}
 }
 
 type liveContractRequiredOperation struct {
@@ -867,7 +935,6 @@ var liveContractRequiredOperations = []liveContractRequiredOperation{
 type liveContractReadProbe struct {
 	pathTemplate string
 	path         string
-	skipReason   string
 }
 
 type contractRigList struct {
@@ -900,135 +967,8 @@ func liveContractConfigHasAgent(agents []contractConfigAgent, name, dir string) 
 	return false
 }
 
-func buildLiveContractPermissionModeAgent(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	source := filepath.Join(dir, "main.go")
-	bin := filepath.Join(dir, "claude")
-	const program = `package main
-
-import (
-	"fmt"
-	"os"
-	"os/exec"
-	"os/signal"
-	"strings"
-	"syscall"
-	"time"
-)
-
-func main() {
-	_ = stty("raw", "-echo")
-	defer stty("sane") //nolint:errcheck
-
-	mode := canonicalMode(os.Getenv("GC_PERMISSION_MODE_INITIAL"))
-	for i := 1; i < len(os.Args); i++ {
-		arg := os.Args[i]
-		switch {
-		case arg == "--dangerously-skip-permissions":
-			mode = "bypassPermissions"
-		case arg == "--permission-mode" && i+1 < len(os.Args):
-			mode = canonicalMode(os.Args[i+1])
-			i++
-		case strings.HasPrefix(arg, "--permission-mode="):
-			mode = canonicalMode(strings.TrimPrefix(arg, "--permission-mode="))
-		}
-	}
-	printMode(mode)
-
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-signals
-		os.Exit(0)
-	}()
-
-	var pending string
-	buf := make([]byte, 32)
-	for {
-		n, err := os.Stdin.Read(buf)
-		if n > 0 {
-			pending += string(buf[:n])
-			if strings.Contains(pending, "\x03") {
-				return
-			}
-			for {
-				idx := strings.Index(pending, "\x1b[Z")
-				if idx < 0 {
-					break
-				}
-				mode = nextMode(mode)
-				printMode(mode)
-				pending = pending[idx+3:]
-			}
-			if len(pending) > 8 {
-				pending = pending[len(pending)-8:]
-			}
-		}
-		if err != nil {
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
-}
-
-func stty(args ...string) error {
-	cmd := exec.Command("stty", args...)
-	cmd.Stdin = os.Stdin
-	return cmd.Run()
-}
-
-func canonicalMode(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "acceptedits", "accept-edits", "accept_edits", "auto-edit", "auto_edit":
-		return "acceptEdits"
-	case "plan", "plan-mode", "plan_mode":
-		return "plan"
-	case "bypasspermissions", "bypass-permissions", "bypass_permissions", "unrestricted", "full-auto", "full_auto", "yolo":
-		return "bypassPermissions"
-	default:
-		return "default"
-	}
-}
-
-func nextMode(mode string) string {
-	switch mode {
-	case "bypassPermissions":
-		return "acceptEdits"
-	case "acceptEdits":
-		return "plan"
-	case "plan":
-		return "bypassPermissions"
-	default:
-		return "acceptEdits"
-	}
-}
-
-func printMode(mode string) {
-	fmt.Printf("Shift+Tab to cycle permission mode: %s\n", modeLabel(mode))
-}
-
-func modeLabel(mode string) string {
-	switch mode {
-	case "bypassPermissions":
-		return "Bypass Permissions mode"
-	case "acceptEdits":
-		return "Accept Edits mode"
-	case "plan":
-		return "Plan mode"
-	default:
-		return "Default mode"
-	}
-}
-`
-	if err := os.WriteFile(source, []byte(program), 0o644); err != nil {
-		t.Fatalf("write permission mode agent source: %v", err)
-	}
-	cmd := exec.Command("go", "build", "-o", bin, source)
-	cmd.Dir = findRepoRoot(t)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build permission mode agent: %v\n%s", err, string(out))
-	}
-	return bin
+func liveContractIdleAgentArgs() []string {
+	return []string{"-c", `trap "exit 0" TERM INT; while :; do read -t 1 _ || true; done`}
 }
 
 func createLiveContractAgentSession(t *testing.T, baseURL string, v openapivalidator.Validator, cityBase, targetAgent, rigName, label string) string {
@@ -1080,17 +1020,79 @@ func createLiveContractAgentSession(t *testing.T, baseURL string, v openapivalid
 	return result.Session.ID
 }
 
+func createLiveContractProviderSession(t *testing.T, baseURL string, v openapivalidator.Validator, cityBase, providerName, label string) string {
+	t.Helper()
+	create := liveContractJSON[struct {
+		RequestID   string `json:"request_id"`
+		EventCursor string `json:"event_cursor"`
+		Status      string `json:"status"`
+	}](t, baseURL, v, http.MethodPost, cityBase+"/sessions", map[string]any{
+		"alias": "rw-" + label,
+		"kind":  "provider",
+		"name":  providerName,
+		"title": "live contract " + label,
+	}, http.StatusAccepted)
+	if create.RequestID == "" {
+		t.Fatalf("%s provider session create response missing request_id", label)
+	}
+	if create.EventCursor == "" {
+		t.Fatalf("%s provider session create response missing event_cursor", label)
+	}
+	result := waitForLiveContractRequestID[struct {
+		RequestID string `json:"request_id"`
+		Session   struct {
+			ID    string `json:"id"`
+			Title string `json:"title"`
+			Alias string `json:"alias"`
+			State string `json:"state"`
+		} `json:"session"`
+	}](t, baseURL, v, cityBase+"/events", create.RequestID, "request.result.session.create", 120*time.Second, create.EventCursor)
+	if result.Session.ID == "" {
+		t.Fatalf("%s provider session create result missing session.id", label)
+	}
+	if result.Session.State == "creating" {
+		t.Fatalf("%s provider session create result state = %q, want commandable state", label, result.Session.State)
+	}
+	if result.Session.Title != "live contract "+label {
+		t.Fatalf("%s provider session title = %q", label, result.Session.Title)
+	}
+	if result.Session.Alias == "" {
+		t.Fatalf("%s provider session missing alias", label)
+	}
+	liveContractJSON[map[string]any](t, baseURL, v, http.MethodGet, cityBase+"/session/"+url.PathEscape(result.Session.ID)+"/pending", nil, http.StatusOK)
+	return result.Session.ID
+}
+
+func killAndCloseLiveContractSession(t *testing.T, baseURL string, v openapivalidator.Validator, sessionPath string) {
+	t.Helper()
+	liveContractJSON[struct {
+		ID string `json:"id"`
+	}](t, baseURL, v, http.MethodPost, sessionPath+"/kill", nil, http.StatusOK)
+	liveContractJSON[struct {
+		Status string `json:"status"`
+	}](t, baseURL, v, http.MethodPost, sessionPath+"/close?delete=true", nil, http.StatusOK)
+}
+
 func closeLiveContractRigSessions(t *testing.T, baseURL string, v openapivalidator.Validator, cityBase, rigName string) {
+	t.Helper()
+	closeLiveContractSessions(t, baseURL, v, cityBase, func(sess liveContractSessionListItem) bool {
+		return sess.Rig == rigName || strings.HasPrefix(sess.Template, rigName+"/")
+	})
+}
+
+type liveContractSessionListItem struct {
+	ID       string `json:"id"`
+	Rig      string `json:"rig"`
+	Template string `json:"template"`
+	State    string `json:"state"`
+}
+
+func closeLiveContractSessions(t *testing.T, baseURL string, v openapivalidator.Validator, cityBase string, include func(liveContractSessionListItem) bool) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		sessions := liveContractJSON[struct {
-			Items []struct {
-				ID       string `json:"id"`
-				Rig      string `json:"rig"`
-				Template string `json:"template"`
-				State    string `json:"state"`
-			} `json:"items"`
+			Items []liveContractSessionListItem `json:"items"`
 		}](t, baseURL, v, http.MethodGet, cityBase+"/sessions?limit=100", nil, http.StatusOK)
 
 		remaining := 0
@@ -1098,7 +1100,7 @@ func closeLiveContractRigSessions(t *testing.T, baseURL string, v openapivalidat
 			if sess.ID == "" || sess.State == "closed" {
 				continue
 			}
-			if sess.Rig != rigName && !strings.HasPrefix(sess.Template, rigName+"/") {
+			if include != nil && !include(sess) {
 				continue
 			}
 			remaining++
@@ -1110,10 +1112,38 @@ func closeLiveContractRigSessions(t *testing.T, baseURL string, v openapivalidat
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out closing %d live contract rig session(s)", remaining)
+			t.Fatalf("timed out closing %d live contract session(s)", remaining)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+func unregisterLiveContractCity(t *testing.T, baseURL string, v openapivalidator.Validator, cityName, cityBase string, beforeUnregister func()) {
+	t.Helper()
+	liveContractJSON[struct {
+		Status string `json:"status"`
+	}](t, baseURL, v, http.MethodPatch, cityBase, map[string]bool{"suspended": true}, http.StatusOK)
+	closeLiveContractSessions(t, baseURL, v, cityBase, func(liveContractSessionListItem) bool { return true })
+	if beforeUnregister != nil {
+		beforeUnregister()
+	}
+
+	unregister := liveContractJSON[struct {
+		RequestID   string `json:"request_id"`
+		EventCursor string `json:"event_cursor"`
+	}](t, baseURL, v, http.MethodPost, cityBase+"/unregister", nil, http.StatusAccepted)
+	if unregister.RequestID == "" {
+		t.Fatalf("unregister response missing request_id")
+	}
+	if unregister.EventCursor == "" {
+		t.Fatalf("unregister response missing event_cursor")
+	}
+	waitForLiveContractRequestID[struct {
+		RequestID string `json:"request_id"`
+		Name      string `json:"name"`
+		Path      string `json:"path"`
+	}](t, baseURL, v, "/v0/events", unregister.RequestID, "request.result.city.unregister", 120*time.Second, unregister.EventCursor)
+	waitForCityAbsent(t, baseURL, v, cityName, 45*time.Second)
 }
 
 func exerciseLiveContractSessionLifecycle(t *testing.T, baseURL string, v openapivalidator.Validator, cityBase, targetAgent, rigName, runID string) {
@@ -1174,6 +1204,32 @@ func exerciseLiveContractSessionLifecycle(t *testing.T, baseURL string, v openap
 	waitForLiveContractRequestID[struct {
 		RequestID string `json:"request_id"`
 	}](t, baseURL, v, cityBase+"/events", msg.RequestID, "request.result.session.message", 120*time.Second, msg.EventCursor)
+
+	missingMsg := liveContractJSON[struct {
+		RequestID   string `json:"request_id"`
+		EventCursor string `json:"event_cursor"`
+	}](t, baseURL, v, http.MethodPost, cityBase+"/session/"+url.PathEscape("missing-"+runID)+"/messages", map[string]string{
+		"message": "real-world app contract missing target " + runID,
+	}, http.StatusAccepted)
+	if missingMsg.RequestID == "" || missingMsg.EventCursor == "" {
+		t.Fatalf("missing-target message response = %+v, want request_id and event_cursor", missingMsg)
+	}
+	missingFailure := waitForLiveContractStreamEvent(t, baseURL, cityBase+"/events/stream?after_seq="+url.QueryEscape(missingMsg.EventCursor), func(event contractEvent) bool {
+		if event.Type != "request.failed" {
+			return false
+		}
+		var payload struct {
+			RequestID string `json:"request_id"`
+			Operation string `json:"operation"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return false
+		}
+		return payload.RequestID == missingMsg.RequestID && payload.Operation == "session.message"
+	}, 30*time.Second)
+	if missingFailure.Seq == 0 {
+		t.Fatalf("missing-target request.failed event missing sequence: %+v", missingFailure)
+	}
 
 	liveContractJSON[map[string]any](t, baseURL, v, http.MethodGet, sessionPath+"/pending", nil, http.StatusOK)
 	liveContractRequestOneOf(t, baseURL, v, http.MethodPost, sessionPath+"/respond", map[string]string{
@@ -1331,7 +1387,7 @@ func exerciseLiveContractFormulasAndWorkflows(t *testing.T, baseURL string, v op
 	}](t, baseURL, v, http.MethodDelete, cityBase+"/convoy/"+url.PathEscape(convoy.ID), nil, http.StatusOK)
 }
 
-func exerciseLiveContractOrders(t *testing.T, baseURL string, v openapivalidator.Validator, cityBase, rigName, rootBeadID, runID string) {
+func exerciseLiveContractOrders(t *testing.T, baseURL string, v openapivalidator.Validator, cityBase, rigName, rootBeadID, runID string) (string, string) {
 	t.Helper()
 	scopedName := "real-world-app-contract-" + runID + ":rig:" + rigName
 	orderRun := liveContractJSON[beads.Bead](t, baseURL, v, http.MethodPost, cityBase+"/beads", map[string]any{
@@ -1344,9 +1400,6 @@ func exerciseLiveContractOrders(t *testing.T, baseURL string, v openapivalidator
 		"title": "real-world app contract order history " + runID,
 		"type":  "task",
 	}, http.StatusCreated)
-	defer liveContractJSON[struct {
-		Status string `json:"status"`
-	}](t, baseURL, v, http.MethodDelete, cityBase+"/bead/"+url.PathEscape(orderRun.ID), nil, http.StatusOK)
 
 	liveContractJSON[map[string]any](t, baseURL, v, http.MethodGet, cityBase+"/orders", nil, http.StatusOK)
 	liveContractJSON[map[string]any](t, baseURL, v, http.MethodGet, cityBase+"/orders/check", nil, http.StatusOK)
@@ -1372,6 +1425,62 @@ func exerciseLiveContractOrders(t *testing.T, baseURL string, v openapivalidator
 	if detail.BeadID != orderRun.ID || !strings.Contains(detail.Output, "hello from live contract") {
 		t.Fatalf("order history detail = %+v, want output for %q", detail, orderRun.ID)
 	}
+	return scopedName, orderRun.ID
+}
+
+type liveContractConversationRef struct {
+	ScopeID        string
+	Provider       string
+	AccountID      string
+	ConversationID string
+	Kind           string
+}
+
+func (ref liveContractConversationRef) body() map[string]string {
+	return map[string]string{
+		"scope_id":        ref.ScopeID,
+		"provider":        ref.Provider,
+		"account_id":      ref.AccountID,
+		"conversation_id": ref.ConversationID,
+		"kind":            ref.Kind,
+	}
+}
+
+func (ref liveContractConversationRef) query() url.Values {
+	query := url.Values{}
+	query.Set("scope_id", ref.ScopeID)
+	query.Set("provider", ref.Provider)
+	query.Set("account_id", ref.AccountID)
+	query.Set("conversation_id", ref.ConversationID)
+	query.Set("kind", ref.Kind)
+	return query
+}
+
+func exerciseLiveContractExtMsg(t *testing.T, baseURL string, v openapivalidator.Validator, cityBase, cityName, sessionID, runID string) liveContractConversationRef {
+	t.Helper()
+	conversation := liveContractConversationRef{
+		ScopeID:        cityName,
+		Provider:       "live-contract",
+		AccountID:      "account-" + runID,
+		ConversationID: "conversation-" + runID,
+		Kind:           "room",
+	}
+	liveContractJSON[map[string]any](t, baseURL, v, http.MethodPost, cityBase+"/extmsg/groups", map[string]any{
+		"root_conversation": conversation.body(),
+		"mode":              "launcher",
+		"default_handle":    "worker",
+		"metadata": map[string]string{
+			"real_world_app.contract.run_id": runID,
+		},
+	}, http.StatusCreated)
+	liveContractJSON[map[string]any](t, baseURL, v, http.MethodPost, cityBase+"/extmsg/bind", map[string]any{
+		"conversation": conversation.body(),
+		"session_id":   sessionID,
+		"metadata": map[string]string{
+			"real_world_app.contract.run_id": runID,
+		},
+	}, http.StatusOK)
+	return conversation
 }
 
 func formulaListContains(items []struct {
@@ -1744,11 +1853,40 @@ func waitForLiveContractRequestEvent(t *testing.T, baseURL, path, requestID, suc
 	return contractEvent{}
 }
 
+func assertLiveContractEventAfterCursor(t *testing.T, event contractEvent, cursor string) {
+	t.Helper()
+	seq, err := strconv.ParseUint(strings.TrimSpace(cursor), 10, 64)
+	if err != nil {
+		t.Fatalf("event_cursor %q is not a city sequence: %v", cursor, err)
+	}
+	if event.Seq <= seq {
+		t.Fatalf("event seq = %d, want after returned cursor %d; event=%+v", event.Seq, seq, event)
+	}
+}
+
 func waitForLiveContractStreamEvent(t *testing.T, baseURL, path string, match func(contractEvent) bool, timeout time.Duration) contractEvent {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	resp := openLiveContractStream(t, ctx, baseURL, path)
+	defer resp.Body.Close() //nolint:errcheck
+	return scanLiveContractStreamEvent(t, ctx, path, resp.Body, match)
+}
+
+func waitForLiveContractStreamEventAfterAction(t *testing.T, baseURL, path string, action func(), match func(contractEvent) bool, timeout time.Duration) contractEvent {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	resp := openLiveContractStream(t, ctx, baseURL, path)
+	defer resp.Body.Close() //nolint:errcheck
+	action()
+	return scanLiveContractStreamEvent(t, ctx, path, resp.Body, match)
+}
+
+func openLiveContractStream(t *testing.T, ctx context.Context, baseURL, path string) *http.Response {
+	t.Helper()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+path, nil)
 	if err != nil {
 		t.Fatalf("build event stream request %s: %v", path, err)
@@ -1758,13 +1896,17 @@ func waitForLiveContractStreamEvent(t *testing.T, baseURL, path string, match fu
 	if err != nil {
 		t.Fatalf("GET %s SSE: %v", path, err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close() //nolint:errcheck
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		t.Fatalf("GET %s SSE status = %d, want 200; body: %s", path, resp.StatusCode, string(raw))
 	}
+	return resp
+}
 
-	scanner := bufio.NewScanner(resp.Body)
+func scanLiveContractStreamEvent(t *testing.T, ctx context.Context, path string, body io.Reader, match func(contractEvent) bool) contractEvent {
+	t.Helper()
+	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	var data strings.Builder
 	var observed int
@@ -1909,6 +2051,52 @@ func waitForLiveContractPermissionMode(t *testing.T, baseURL string, v openapiva
 	return contractSessionPermissionResponse{}
 }
 
+func switchLiveContractPermissionMode(t *testing.T, baseURL string, v openapivalidator.Validator, cityBase, sessionPath, sessionID, mode string, previousVersion uint64, requireVerified bool, timeout time.Duration) contractPermissionModeUpdate {
+	t.Helper()
+	var updated contractPermissionModeUpdate
+	event := waitForLiveContractStreamEventAfterAction(t, baseURL, cityBase+"/events/stream", func() {
+		updated = liveContractJSON[contractPermissionModeUpdate](t, baseURL, v, http.MethodPost, sessionPath+"/permission-mode", map[string]string{
+			"permission_mode": mode,
+		}, http.StatusOK)
+		if updated.ID != sessionID || updated.PermissionMode != mode || updated.ModeVersion <= previousVersion || (requireVerified && !updated.Verified) {
+			t.Fatalf("permission mode %s update = %+v, want requireVerified=%t and newer version than %d", mode, updated, requireVerified, previousVersion)
+		}
+	}, func(event contractEvent) bool {
+		if event.Type != "session.updated" || event.Subject != sessionID {
+			return false
+		}
+		var payload struct {
+			PermissionMode string `json:"permission_mode"`
+			ModeVersion    uint64 `json:"mode_version"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return false
+		}
+		return payload.PermissionMode == mode && payload.ModeVersion == updated.ModeVersion
+	}, timeout)
+	if event.Seq == 0 {
+		t.Fatalf("session.updated event missing sequence for %s: %+v", mode, event)
+	}
+	return updated
+}
+
+func assertLiveContractPermissionModeSurfaces(t *testing.T, baseURL string, v openapivalidator.Validator, cityBase, sessionPath, sessionID, want string, version uint64, timeout time.Duration) contractSessionPermissionResponse {
+	t.Helper()
+	detail := waitForLiveContractPermissionMode(t, baseURL, v, sessionPath, want, timeout)
+	if detail.ModeVersion != version {
+		t.Fatalf("session detail mode_version = %d, want %d for %s", detail.ModeVersion, version, want)
+	}
+	list := liveContractJSON[struct {
+		Items []contractSessionPermissionResponse `json:"items"`
+	}](t, baseURL, v, http.MethodGet, cityBase+"/sessions?limit=100", nil, http.StatusOK)
+	assertLiveContractSessionListMode(t, list.Items, sessionID, want, version)
+	stream := readLiveContractSessionStreamMessage(t, baseURL, sessionPath+"/stream?format=raw", timeout)
+	if stream.PermissionMode != want || stream.ModeVersion != version {
+		t.Fatalf("session stream event = %s, want %s version %d", stream.Raw, want, version)
+	}
+	return detail
+}
+
 func waitForLiveContractUnsupportedPermissionMode(t *testing.T, baseURL string, v openapivalidator.Validator, sessionPath string, timeout time.Duration) contractSessionPermissionResponse {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -1939,6 +2127,15 @@ func assertLiveContractSessionListMode(t *testing.T, items []contractSessionPerm
 		return
 	}
 	t.Fatalf("session %q missing from list", sessionID)
+}
+
+func requireCommandOnPath(t *testing.T, name string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatalf("%s command not found on PATH: %v", name, err)
+	}
+	return path
 }
 
 func permissionModeJSONKey() string {
@@ -2073,23 +2270,28 @@ func waitForLiveContractAgent(t *testing.T, baseURL string, v openapivalidator.V
 	t.Fatalf("timed out waiting for agent %q at %s; last error: %v", targetAgent, path, lastErr)
 }
 
-func runLiveContractReadSweep(t *testing.T, baseURL string, v openapivalidator.Validator, specBytes []byte, cityName, rigName string) {
+type liveContractReadFixtures struct {
+	cityName           string
+	rigName            string
+	orderScopedName    string
+	bindingSessionID   string
+	extMsgConversation liveContractConversationRef
+}
+
+func runLiveContractReadSweep(t *testing.T, baseURL string, v openapivalidator.Validator, specBytes []byte, fixtures liveContractReadFixtures) {
 	t.Helper()
-	probes := collectLiveContractReadProbes(t, specBytes, cityName, rigName)
+	probes := collectLiveContractReadProbes(t, specBytes, fixtures)
 	if len(probes) == 0 {
 		t.Fatal("OpenAPI read sweep found no GET probes")
 	}
 	for _, probe := range probes {
 		t.Run("GET "+probe.pathTemplate, func(t *testing.T) {
-			if probe.skipReason != "" {
-				t.Skip(probe.skipReason)
-			}
 			liveContractRequest(t, baseURL, v, http.MethodGet, probe.path, nil, http.StatusOK)
 		})
 	}
 }
 
-func collectLiveContractReadProbes(t *testing.T, specBytes []byte, cityName, rigName string) []liveContractReadProbe {
+func collectLiveContractReadProbes(t *testing.T, specBytes []byte, fixtures liveContractReadFixtures) []liveContractReadProbe {
 	t.Helper()
 	var spec struct {
 		Paths map[string]map[string]json.RawMessage `json:"paths"`
@@ -2106,12 +2308,11 @@ func collectLiveContractReadProbes(t *testing.T, specBytes []byte, cityName, rig
 		if strings.Contains(pathTemplate, "/stream") || hasLiveContractUnboundPathParams(pathTemplate) {
 			continue
 		}
-		path := strings.ReplaceAll(pathTemplate, "{cityName}", url.PathEscape(cityName))
-		path = appendLiveContractDefaultQuery(path, pathTemplate, rigName)
+		path := strings.ReplaceAll(pathTemplate, "{cityName}", url.PathEscape(fixtures.cityName))
+		path = appendLiveContractDefaultQuery(t, path, pathTemplate, fixtures)
 		probes = append(probes, liveContractReadProbe{
 			pathTemplate: pathTemplate,
 			path:         path,
-			skipReason:   liveContractProbeSkipReason(pathTemplate),
 		})
 	}
 	return probes
@@ -2126,16 +2327,34 @@ func hasLiveContractUnboundPathParams(pathTemplate string) bool {
 	return false
 }
 
-func appendLiveContractDefaultQuery(path, pathTemplate, rigName string) string {
+func appendLiveContractDefaultQuery(t *testing.T, path, pathTemplate string, fixtures liveContractReadFixtures) string {
+	t.Helper()
 	query := url.Values{}
 	switch {
 	case strings.HasSuffix(pathTemplate, "/formulas") || strings.HasSuffix(pathTemplate, "/formulas/feed"):
 		query.Set("scope_kind", "rig")
-		query.Set("scope_ref", rigName)
+		query.Set("scope_ref", fixtures.rigName)
 	case strings.HasSuffix(pathTemplate, "/orders/feed"):
 		query.Set("limit", "25")
 		query.Set("scope_kind", "rig")
-		query.Set("scope_ref", rigName)
+		query.Set("scope_ref", fixtures.rigName)
+	case strings.HasSuffix(pathTemplate, "/orders/history"):
+		if fixtures.orderScopedName == "" {
+			t.Fatalf("GET %s needs an order scoped name fixture", pathTemplate)
+		}
+		query.Set("scoped_name", fixtures.orderScopedName)
+		query.Set("limit", "20")
+	case strings.HasSuffix(pathTemplate, "/extmsg/bindings"):
+		if fixtures.bindingSessionID == "" {
+			t.Fatalf("GET %s needs a session fixture", pathTemplate)
+		}
+		query.Set("session_id", fixtures.bindingSessionID)
+	case strings.HasSuffix(pathTemplate, "/extmsg/groups") || strings.HasSuffix(pathTemplate, "/extmsg/transcript"):
+		convQuery := fixtures.extMsgConversation.query()
+		if convQuery.Get("scope_id") == "" || convQuery.Get("provider") == "" || convQuery.Get("account_id") == "" || convQuery.Get("conversation_id") == "" || convQuery.Get("kind") == "" {
+			t.Fatalf("GET %s needs a conversation fixture", pathTemplate)
+		}
+		query = convQuery
 	case strings.HasSuffix(pathTemplate, "/readiness") || strings.HasSuffix(pathTemplate, "/provider-readiness"):
 		query.Set("fresh", "false")
 	case strings.HasSuffix(pathTemplate, "/beads"):
@@ -2147,19 +2366,6 @@ func appendLiveContractDefaultQuery(path, pathTemplate, rigName string) string {
 		return path
 	}
 	return path + "?" + query.Encode()
-}
-
-func liveContractProbeSkipReason(pathTemplate string) string {
-	switch {
-	case strings.HasSuffix(pathTemplate, "/extmsg/bindings"),
-		strings.HasSuffix(pathTemplate, "/extmsg/groups"),
-		strings.HasSuffix(pathTemplate, "/extmsg/transcript"):
-		return "requires a real session/conversation identity"
-	case strings.HasSuffix(pathTemplate, "/orders/history"):
-		return "requires a scoped order name fixture"
-	default:
-		return ""
-	}
 }
 
 func assertLiveContractSpec(t *testing.T, specBytes []byte) {

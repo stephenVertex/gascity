@@ -185,6 +185,24 @@ func TestResolveProviderWorkspaceStartCommandWithProvider(t *testing.T) {
 	}
 }
 
+func TestResolveProviderAgentProviderWinsOverWorkspaceStartCommand(t *testing.T) {
+	agent := &Agent{Name: "worker", Provider: "claude"}
+	ws := &Workspace{Name: "city", StartCommand: "true"}
+	rp, err := ResolveProvider(agent, ws, nil, lookPathAll)
+	if err != nil {
+		t.Fatalf("ResolveProvider: %v", err)
+	}
+	if rp.Name != "claude" {
+		t.Errorf("Name = %q, want claude", rp.Name)
+	}
+	if rp.Command != "claude" {
+		t.Errorf("Command = %q, want claude", rp.Command)
+	}
+	if len(rp.ResolveDefaultArgs()) == 0 {
+		t.Error("ResolveDefaultArgs() empty, want provider defaults preserved")
+	}
+}
+
 // TestResolveProviderAgentStartCommandWinsOverWorkspace verifies that
 // agent.start_command takes precedence over workspace.start_command.
 func TestResolveProviderAgentStartCommandWinsOverWorkspace(t *testing.T) {

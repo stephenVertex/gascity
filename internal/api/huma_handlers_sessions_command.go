@@ -26,7 +26,7 @@ import (
 // to isolate mutation logic from reads and streaming.
 
 var (
-	sessionMessageAsyncTimeout      = sessionMessageTimeout
+	sessionMessageAsyncTimeout      = 110 * time.Second
 	sessionCreateCommandableTimeout = 120 * time.Second
 )
 
@@ -117,6 +117,7 @@ func (s *Server) humaHandleSessionCreate(ctx context.Context, input *SessionCrea
 	}
 	extraMeta["agent_name"] = workDirQualifiedName
 	extraMeta["session_origin"] = "manual"
+	addResolvedProviderFamilyMetadata(extraMeta, resolved)
 	mcpServers, err := s.sessionMCPServers(template, resolved.Name, workDirQualifiedName, workDir, transport, kind)
 	if err != nil {
 		return nil, huma.Error500InternalServerError(err.Error())
@@ -302,6 +303,7 @@ func (s *Server) humaCreateProviderSession(_ context.Context, store beads.Store,
 	extraMeta := map[string]string{
 		"session_origin": "manual",
 	}
+	addResolvedProviderFamilyMetadata(extraMeta, resolved)
 	if transport == "acp" {
 		extraMeta, err = session.WithStoredMCPMetadata(extraMeta, mcpIdentity, mcpServers)
 		if err != nil {

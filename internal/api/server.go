@@ -75,6 +75,12 @@ type Server struct {
 	responseCacheMu      sync.Mutex
 	responseCacheEntries map[string]responseCacheEntry
 
+	permissionModeLockMu sync.Mutex
+	permissionModeLocks  map[string]*sync.Mutex
+
+	permissionModeWarningMu sync.Mutex
+	permissionModeWarnings  map[string]time.Time
+
 	// LookPathFunc can be overridden in tests. Defaults to exec.LookPath.
 	LookPathFunc func(string) (string, error)
 

@@ -71,6 +71,20 @@ func apiResolvedProviderFamilyMetadata(resolved *config.ResolvedProvider) string
 	return ""
 }
 
+func addResolvedProviderFamilyMetadata(metadata map[string]string, resolved *config.ResolvedProvider) {
+	if metadata == nil || resolved == nil {
+		return
+	}
+	name := strings.TrimSpace(resolved.Name)
+	if family := strings.TrimSpace(resolved.BuiltinAncestor); family != "" {
+		if family != name {
+			metadata["provider_kind"] = family
+			metadata["builtin_ancestor"] = family
+		}
+		return
+	}
+}
+
 func apiNormalizeSessionTarget(target string) string {
 	return session.NormalizeNamedSessionTarget(target)
 }

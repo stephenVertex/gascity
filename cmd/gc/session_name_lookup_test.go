@@ -85,3 +85,109 @@ func TestResolvedTemplateForIdentity_DoesNotResolveOutOfBoundsQualifiedPoolIdent
 		t.Fatalf("resolvedTemplateForIdentity(frontend/worker-7) = %q, want unresolved out-of-bounds identity", got)
 	}
 }
+
+func TestLookupPoolSessionNameCandidates_RanksExplicitActiveCandidate(t *testing.T) {
+	store := beads.NewMemStore()
+	agentCfg := config.Agent{Name: "worker", Dir: "frontend", MaxActiveSessions: intPtr(2)}
+	cfg := &config.City{Agents: []config.Agent{agentCfg}}
+
+	createPoolLookupBead(t, store, "weak", map[string]string{
+		"agent_name":     "frontend/worker-1",
+		"session_name":   "session-weak",
+		"template":       "frontend/worker",
+		"state":          "creating",
+		"session_origin": "ephemeral",
+	})
+	createPoolLookupBead(t, store, "strong", map[string]string{
+		"agent_name":     "frontend/worker",
+		"session_name":   "session-strong",
+		"template":       "frontend/worker",
+		"pool_slot":      "1",
+		"state":          "active",
+		"session_origin": "ephemeral",
+	})
+	createPoolLookupBead(t, store, "out-of-bounds", map[string]string{
+		"agent_name":     "frontend/worker",
+		"session_name":   "session-out-of-bounds",
+		"template":       "frontend/worker",
+		"pool_slot":      "9",
+		"state":          "active",
+		"session_origin": "ephemeral",
+	})
+
+	candidates, err := lookupPoolSessionNameCandidates(store, "frontend/worker", cfg, &agentCfg)
+	if err != nil {
+		t.Fatalf("lookupPoolSessionNameCandidates: %v", err)
+	}
+	ranked := candidates["frontend/worker-1"]
+	if len(ranked) != 2 {
+		t.Fatalf("ranked candidates = %#v, want two in-bounds candidates", ranked)
+	}
+	if got := ranked[0].sessionName; got != "session-strong" {
+		t.Fatalf("top ranked session = %q, want explicit active pool-slot candidate", got)
+	}
+
+	names, err := lookupPoolSessionNames(store, cfg, &agentCfg)
+	if err != nil {
+		t.Fatalf("lookupPoolSessionNames: %v", err)
+	}
+	if got := names["frontend/worker-1"]; got != "session-strong" {
+		t.Fatalf("resolved pool session = %q, want strongest candidate", got)
+	}
+	if _, ok := candidates["frontend/worker-9"]; ok {
+		t.Fatalf("out-of-bounds slot was returned: %#v", candidates["frontend/worker-9"])
+	}
+}
+
+func TestLookupPoolSessionNames_DropsAmbiguousEquivalentCandidates(t *testing.T) {
+	store := beads.NewMemStore()
+	agentCfg := config.Agent{Name: "worker", Dir: "frontend", MaxActiveSessions: intPtr(2)}
+	cfg := &config.City{Agents: []config.Agent{agentCfg}}
+
+	createPoolLookupBead(t, store, "first", map[string]string{
+		"agent_name":     "frontend/worker-1",
+		"session_name":   "session-first",
+		"template":       "frontend/worker",
+		"state":          "active",
+		"session_origin": "ephemeral",
+	})
+	createPoolLookupBead(t, store, "second", map[string]string{
+		"agent_name":     "frontend/worker-1",
+		"session_name":   "session-second",
+		"template":       "frontend/worker",
+		"state":          "active",
+		"session_origin": "ephemeral",
+	})
+
+	candidates, err := lookupPoolSessionNameCandidates(store, "frontend/worker", cfg, &agentCfg)
+	if err != nil {
+		t.Fatalf("lookupPoolSessionNameCandidates: %v", err)
+	}
+	if got := len(candidates["frontend/worker-1"]); got != 2 {
+		t.Fatalf("candidate count = %d, want ambiguity to remain visible to resolver", got)
+	}
+
+	names, err := lookupPoolSessionNames(store, cfg, &agentCfg)
+	if err != nil {
+		t.Fatalf("lookupPoolSessionNames: %v", err)
+	}
+	if got := names["frontend/worker-1"]; got != "" {
+		t.Fatalf("ambiguous equivalent pool session resolved to %q, want no resolution", got)
+	}
+}
+
+func createPoolLookupBead(t *testing.T, store beads.Store, id string, metadata map[string]string) {
+	t.Helper()
+	if _, ok := metadata[poolManagedMetadataKey]; !ok {
+		metadata[poolManagedMetadataKey] = boolMetadata(true)
+	}
+	if _, err := store.Create(beads.Bead{
+		ID:       id,
+		Title:    id,
+		Type:     sessionBeadType,
+		Labels:   []string{sessionBeadLabel},
+		Metadata: metadata,
+	}); err != nil {
+		t.Fatalf("create pool lookup bead %s: %v", id, err)
+	}
+}

@@ -166,6 +166,7 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	extraMeta["agent_name"] = createCtx.Identity
 	extraMeta["session_origin"] = "ephemeral"
+	addResolvedProviderFamilyMetadata(extraMeta, resolved)
 	if transport == "acp" {
 		extraMeta, err = session.WithStoredMCPMetadata(extraMeta, createCtx.Identity, mcpServers)
 		if err != nil {
@@ -355,6 +356,7 @@ func (s *Server) createProviderSession(w http.ResponseWriter, r *http.Request, s
 	extraMeta := map[string]string{
 		"session_origin": "manual",
 	}
+	addResolvedProviderFamilyMetadata(extraMeta, resolved)
 	if transport == "acp" {
 		extraMeta, err = session.WithStoredMCPMetadata(extraMeta, mcpIdentity, mcpServers)
 		if err != nil {

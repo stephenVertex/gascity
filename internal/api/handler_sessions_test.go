@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -2566,6 +2567,49 @@ func TestMaterializeNamedSessionStampsProviderFamilyMetadata(t *testing.T) {
 	}
 }
 
+func TestHandleSessionCreateStampsProviderFamilyMetadata(t *testing.T) {
+	fs := newSessionFakeState(t)
+	base := "builtin:claude"
+	fs.cfg.Agents[0].Provider = "claude-fast"
+	fs.cfg.Providers = map[string]config.ProviderSpec{
+		"claude-fast": {Base: &base},
+	}
+	srv := New(fs)
+	h := newTestCityHandlerWith(t, fs, srv)
+
+	req := newPostRequest(cityURL(fs, "/sessions"), strings.NewReader(`{"kind":"agent","name":"myrig/worker","async":true}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	accepted := decodeAsyncAccepted(t, rec.Body)
+	success, failure := waitForSessionCreateResult(t, fs.eventProv, accepted.RequestID)
+	if success == nil {
+		t.Fatalf("session create failed: %s: %s", failure.ErrorCode, failure.ErrorMessage)
+	}
+	bead, err := fs.cityBeadStore.Get(success.Session.ID)
+	if err != nil {
+		t.Fatalf("get session bead: %v", err)
+	}
+	if got := bead.Metadata["provider"]; got != "claude-fast" {
+		t.Fatalf("provider = %q, want claude-fast", got)
+	}
+	if got := bead.Metadata["provider_kind"]; got != "claude" {
+		t.Fatalf("provider_kind = %q, want claude", got)
+	}
+	if got := bead.Metadata["builtin_ancestor"]; got != "claude" {
+		t.Fatalf("builtin_ancestor = %q, want claude", got)
+	}
+	cfg := fs.sp.LastStartConfig(bead.Metadata["session_name"])
+	if cfg == nil {
+		t.Fatalf("Start call not recorded: %#v", fs.sp.Calls)
+	}
+	if got := cfg.Env["GC_PROVIDER"]; got != "claude" {
+		t.Fatalf("GC_PROVIDER = %q, want claude", got)
+	}
+}
+
 func TestMaterializeNamedSessionRejectsACPTemplateWithoutACPRouting(t *testing.T) {
 	supportsACP := true
 	fs := newSessionFakeState(t)
@@ -3534,6 +3578,45 @@ func TestHandleSessionMessageMaterializesNamedSessionAsync(t *testing.T) {
 	}
 }
 
+func TestHandleSessionMessageResultIsVisibleAfterAcceptedCursor(t *testing.T) {
+	fs := newSessionFakeState(t)
+	srv := New(fs)
+	h := newTestCityHandlerWith(t, fs, srv)
+
+	req := newPostRequest(cityURL(fs, "/session/worker/messages"), strings.NewReader(`{"message":"hello"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("message status = %d, want %d; body: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	accepted := decodeAsyncAccepted(t, rec.Body)
+	cursor, err := strconv.ParseUint(accepted.EventCursor, 10, 64)
+	if err != nil {
+		t.Fatalf("parse event_cursor %q: %v", accepted.EventCursor, err)
+	}
+
+	deadline := time.Now().Add(testEventTimeout)
+	for time.Now().Before(deadline) {
+		successEvents, _ := fs.eventProv.List(events.Filter{Type: events.RequestResultSessionMessage, AfterSeq: cursor})
+		for _, event := range successEvents {
+			var payload SessionMessageSucceededPayload
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.RequestID == accepted.RequestID {
+				return
+			}
+		}
+		failedEvents, _ := fs.eventProv.List(events.Filter{Type: events.RequestFailed, AfterSeq: cursor})
+		for _, event := range failedEvents {
+			var payload RequestFailedPayload
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.RequestID == accepted.RequestID {
+				t.Fatalf("session message failed after cursor: %s: %s", payload.ErrorCode, payload.ErrorMessage)
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for session message result after cursor %d request_id=%s", cursor, accepted.RequestID)
+}
+
 func TestHandleSessionMessageEmitsFailureWhenProviderNudgeHangs(t *testing.T) {
 	fs := newSessionFakeState(t)
 	blocker := &blockingNudgeProvider{
@@ -3580,9 +3663,12 @@ func TestHandleSessionMessageEmitsFailureWhenProviderNudgeHangs(t *testing.T) {
 	}
 }
 
-func TestSessionMessageAsyncTimeoutMatchesClientTimeout(t *testing.T) {
-	if sessionMessageAsyncTimeout != sessionMessageTimeout {
-		t.Fatalf("sessionMessageAsyncTimeout = %s, want client timeout %s", sessionMessageAsyncTimeout, sessionMessageTimeout)
+func TestSessionMessageAsyncTimeoutPrecedesClientTimeout(t *testing.T) {
+	if sessionMessageAsyncTimeout >= sessionMessageTimeout {
+		t.Fatalf("sessionMessageAsyncTimeout = %s, want less than client timeout %s", sessionMessageAsyncTimeout, sessionMessageTimeout)
+	}
+	if sessionMessageAsyncTimeout >= 120*time.Second {
+		t.Fatalf("sessionMessageAsyncTimeout = %s, want under 120s", sessionMessageAsyncTimeout)
 	}
 }
 

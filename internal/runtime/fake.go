@@ -548,12 +548,15 @@ func (f *Fake) SetPermissionModeCapability(name string, capability PermissionMod
 
 // PermissionModeCapability reports the configured fake permission mode
 // capability for a session.
-func (f *Fake) PermissionModeCapability(name, _ string) PermissionModeCapability {
+func (f *Fake) PermissionModeCapability(name, provider string) PermissionModeCapability {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.Calls = append(f.Calls, Call{Method: "PermissionModeCapability", Name: name})
+	f.Calls = append(f.Calls, Call{Method: "PermissionModeCapability", Name: name, Key: provider})
 	if f.broken {
 		return PermissionModeCapability{Reason: "session unavailable"}
+	}
+	if err, ok := f.PermissionModeReadErrors[name]; ok {
+		return PermissionModeCapability{Reason: err.Error()}
 	}
 	if capability, ok := f.PermissionModeCaps[name]; ok {
 		return clonePermissionModeCapability(capability)
@@ -570,10 +573,10 @@ func (f *Fake) PermissionModeCapability(name, _ string) PermissionModeCapability
 }
 
 // PermissionMode reports the configured fake permission mode for a session.
-func (f *Fake) PermissionMode(_ context.Context, name, _ string) (PermissionModeState, error) {
+func (f *Fake) PermissionMode(_ context.Context, name, provider string) (PermissionModeState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.Calls = append(f.Calls, Call{Method: "PermissionMode", Name: name})
+	f.Calls = append(f.Calls, Call{Method: "PermissionMode", Name: name, Key: provider})
 	if f.broken {
 		return PermissionModeState{}, fmt.Errorf("session unavailable")
 	}
@@ -632,6 +635,73 @@ func (f *Fake) SetPermissionMode(_ context.Context, name, provider string, mode 
 		Mode:     mode,
 		Version:  f.PermissionModeVersions[name],
 		Verified: true,
+	}, nil
+}
+
+// PermissionModeCapabilityForState reports fake live-switch capability from a
+// caller-supplied current mode.
+func (f *Fake) PermissionModeCapabilityForState(name, provider string, current PermissionMode) PermissionModeCapability {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, Call{Method: "PermissionModeCapabilityForState", Name: name, Key: provider, Value: string(current)})
+	if f.broken {
+		return PermissionModeCapability{Reason: "session unavailable"}
+	}
+	if _, exists := f.sessions[name]; !exists {
+		return PermissionModeCapability{Reason: "session unavailable"}
+	}
+	if capability, ok := f.PermissionModeCaps[name]; ok && (!capability.Supported || !capability.LiveSwitch) {
+		return clonePermissionModeCapability(capability)
+	}
+	values := PermissionModeCycleValues(current)
+	if len(values) == 0 {
+		return PermissionModeCapability{Reason: ErrPermissionModeUnsupported.Error()}
+	}
+	return PermissionModeCapability{
+		Supported:  true,
+		Readable:   true,
+		LiveSwitch: true,
+		Values:     values,
+	}
+}
+
+// SetPermissionModeFromState updates fake permission mode from caller-supplied
+// current state.
+func (f *Fake) SetPermissionModeFromState(_ context.Context, name, provider string, current, mode PermissionMode) (PermissionModeState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, Call{Method: "SetPermissionModeFromState", Name: name, Key: provider, Value: string(mode)})
+	if f.broken {
+		return PermissionModeState{}, fmt.Errorf("session unavailable")
+	}
+	if _, exists := f.sessions[name]; !exists {
+		return PermissionModeState{}, ErrSessionNotFound
+	}
+	if err, ok := f.PermissionModeSetErrors[name]; ok {
+		return PermissionModeState{}, err
+	}
+	capability, ok := f.PermissionModeCaps[name]
+	if ok && !capability.Supported {
+		return PermissionModeState{}, ErrPermissionModeUnsupported
+	}
+	if ok && !capability.LiveSwitch {
+		return PermissionModeState{}, ErrPermissionModeSwitchUnsupported
+	}
+	if !PermissionModeCanSwitch(current, mode) {
+		return PermissionModeState{}, ErrPermissionModeSwitchUnsupported
+	}
+	if f.PermissionModes == nil {
+		f.PermissionModes = make(map[string]PermissionMode)
+	}
+	if f.PermissionModeVersions == nil {
+		f.PermissionModeVersions = make(map[string]uint64)
+	}
+	f.PermissionModes[name] = mode
+	f.PermissionModeVersions[name]++
+	return PermissionModeState{
+		Mode:     mode,
+		Version:  f.PermissionModeVersions[name],
+		Verified: false,
 	}, nil
 }
 

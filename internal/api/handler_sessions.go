@@ -123,7 +123,7 @@ func sessionResponseWithReason(info session.Info, b *beads.Bead, cfg *config.Cit
 	// per-session template_overrides. The dashboard uses this to display
 	// the actual permission mode and other settings.
 	if b != nil && cfg != nil {
-		rp, _ := resolveProviderForTemplate(info.Template, cfg)
+		rp, _ := resolveProviderForSessionResponse(info, cfg)
 		if rp != nil && len(rp.EffectiveDefaults) > 0 {
 			merged := make(map[string]string, len(rp.EffectiveDefaults))
 			for k, v := range rp.EffectiveDefaults {
@@ -230,8 +230,9 @@ func (s *Server) handleSessionList(w http.ResponseWriter, r *http.Request) {
 	items := make([]sessionResponse, len(sessions))
 	hasDeferredQueue := strings.TrimSpace(s.state.CityPath()) != ""
 	for i, sess := range sessions {
-		items[i] = sessionResponseWithReason(sess, beadIndex[sess.ID], cfg, hasDeferredQueue)
-		s.enrichSessionResponse(&items[i], sess, cfg, s.runtimeSessionResponseHandle(sess), wantPeek, false, false)
+		b := beadIndex[sess.ID]
+		items[i] = sessionResponseWithReason(sess, b, cfg, hasDeferredQueue)
+		s.enrichSessionResponseWithBead(&items[i], sess, b, cfg, s.runtimeSessionResponseHandle(sess), wantPeek, false, false)
 	}
 
 	pp := parsePagination(r, maxPaginationLimit)
@@ -288,7 +289,7 @@ func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
 	resp := sessionResponseWithReason(info, &b, cfg, strings.TrimSpace(s.state.CityPath()) != "")
 	handle, err := s.workerHandleForSession(store, id)
 	if err == nil {
-		s.enrichSessionResponse(&resp, info, cfg, handle, wantPeek, true, true)
+		s.enrichSessionResponseWithBead(&resp, info, &b, cfg, handle, wantPeek, true, true)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -500,7 +501,11 @@ func (s *Server) handleSessionRename(w http.ResponseWriter, r *http.Request) {
 // enrichSessionResponse populates runtime fields on a session response:
 // running state, active bead, peek output, and model/context metadata.
 func (s *Server) enrichSessionResponse(resp *sessionResponse, info session.Info, cfg *config.City, runtimeHandle any, wantPeek, liveActiveBead, allowWorkdirTranscriptDiscovery bool) {
-	s.enrichLivePermissionMode(resp, info)
+	s.enrichSessionResponseWithBead(resp, info, nil, cfg, runtimeHandle, wantPeek, liveActiveBead, allowWorkdirTranscriptDiscovery)
+}
+
+func (s *Server) enrichSessionResponseWithBead(resp *sessionResponse, info session.Info, b *beads.Bead, cfg *config.City, runtimeHandle any, wantPeek, liveActiveBead, allowWorkdirTranscriptDiscovery bool) {
+	s.enrichLivePermissionModeFromBead(resp, info, b)
 	if info.State != session.StateActive {
 		return
 	}
@@ -719,4 +724,15 @@ func resolveProviderForTemplate(template string, cfg *config.City) (*config.Reso
 		return nil, fmt.Errorf("agent %q not found", template)
 	}
 	return config.ResolveProvider(&agent, &cfg.Workspace, cfg.Providers, exec.LookPath)
+}
+
+func resolveProviderForSessionResponse(info session.Info, cfg *config.City) (*config.ResolvedProvider, error) {
+	if resolved, err := resolveProviderForTemplate(info.Template, cfg); err == nil {
+		return resolved, nil
+	}
+	provider := firstNonEmptyString(info.Provider, info.Template)
+	if strings.TrimSpace(provider) == "" {
+		return nil, fmt.Errorf("session %q has no provider", info.ID)
+	}
+	return config.ResolveProvider(&config.Agent{Provider: provider}, &cfg.Workspace, cfg.Providers, exec.LookPath)
 }

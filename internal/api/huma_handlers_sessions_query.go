@@ -42,8 +42,9 @@ func (s *Server) humaHandleSessionList(_ context.Context, input *SessionListInpu
 	hasDeferredQueue := strings.TrimSpace(s.state.CityPath()) != ""
 	items := make([]sessionResponse, len(sessions))
 	for i, sess := range sessions {
-		items[i] = sessionResponseWithReason(sess, beadIndex[sess.ID], cfg, hasDeferredQueue)
-		s.enrichSessionResponse(&items[i], sess, cfg, s.runtimeSessionResponseHandle(sess), wantPeek, false, false)
+		b := beadIndex[sess.ID]
+		items[i] = sessionResponseWithReason(sess, b, cfg, hasDeferredQueue)
+		s.enrichSessionResponseWithBead(&items[i], sess, b, cfg, s.runtimeSessionResponseHandle(sess), wantPeek, false, false)
 	}
 
 	// Pagination support.
@@ -119,7 +120,7 @@ func (s *Server) humaHandleSessionGet(_ context.Context, input *SessionGetInput)
 	b, _ := store.Get(id)
 	wantPeek := input.Peek
 	resp := sessionResponseWithReason(info, &b, cfg, strings.TrimSpace(s.state.CityPath()) != "")
-	s.enrichSessionResponse(&resp, info, cfg, sp, wantPeek, true, true)
+	s.enrichSessionResponseWithBead(&resp, info, &b, cfg, sp, wantPeek, true, true)
 	return &IndexOutput[sessionResponse]{
 		Index: s.latestIndex(),
 		Body:  resp,

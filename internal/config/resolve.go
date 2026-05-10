@@ -80,15 +80,10 @@ func ResolveProvider(agent *Agent, ws *Workspace, cityProviders map[string]Provi
 		completeResolvedProviderResumeCommand(resolved)
 	}
 
-	// Step 4b: workspace.start_command overrides the resolved command when
-	// the agent doesn't set its own. Unlike the escape hatch at step 2
-	// (which returns a bare provider for the no-provider case), this path
-	// preserves all provider settings (PromptMode, ProcessNames, etc.)
-	// while replacing the command. Args, OptionsSchema, and
-	// EffectiveDefaults are cleared because start_command is the complete
-	// command line — appending schema-derived flags would conflict with
-	// the user's explicit command.
-	if agent.StartCommand == "" && ws != nil && ws.StartCommand != "" {
+	// Step 4b: workspace.start_command overrides the resolved command for
+	// workspace-default or auto-detected providers. An agent with an explicit
+	// provider keeps that provider's command.
+	if agent.StartCommand == "" && agent.Provider == "" && ws != nil && ws.StartCommand != "" {
 		resolved.Command = ws.StartCommand
 		resolved.Args = nil
 		resolved.OptionsSchema = nil
