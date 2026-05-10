@@ -729,6 +729,23 @@ func (m *Manager) StopTurn(id string) error {
 	})
 }
 
+// RequestStopTurn issues the provider stop/interrupt signal for the current
+// turn and returns after the signal is delivered. It does not wait for provider
+// idle/boundary settlement.
+func (m *Manager) RequestStopTurn(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	b, sessName, err := m.sessionBead(id)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return m.stopTurnLocked(b, sessName)
+}
+
 // Pending returns the provider's current structured pending interaction, if
 // the provider supports that capability.
 func (m *Manager) Pending(id string) (*runtime.PendingInteraction, bool, error) {

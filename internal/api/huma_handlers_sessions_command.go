@@ -608,7 +608,7 @@ func (s *Server) humaHandleSessionMessage(_ context.Context, input *SessionMessa
 
 // humaHandleSessionStop is the Huma-typed handler for POST /v0/session/{id}/stop.
 
-func (s *Server) humaHandleSessionStop(_ context.Context, input *SessionIDInput) (*OKWithIDResponse, error) {
+func (s *Server) humaHandleSessionStop(ctx context.Context, input *SessionIDInput) (*OKWithIDResponse, error) {
 	store := s.state.CityBeadStore()
 	if store == nil {
 		return nil, huma.Error503ServiceUnavailable("no bead store configured")
@@ -620,7 +620,7 @@ func (s *Server) humaHandleSessionStop(_ context.Context, input *SessionIDInput)
 	}
 
 	mgr := s.sessionManager(store)
-	if err := mgr.StopTurn(id); err != nil {
+	if err := mgr.RequestStopTurn(ctx, id); err != nil {
 		return nil, humaSessionManagerError(err)
 	}
 	out := &OKWithIDResponse{}

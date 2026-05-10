@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/nudgequeue"
@@ -197,5 +198,55 @@ func TestHandleSessionStopUsesSoftEscapeForCodex(t *testing.T) {
 	}
 	if sawInterrupt {
 		t.Fatalf("calls = %#v, did not want Interrupt for codex stop", fs.sp.Calls)
+	}
+}
+
+func TestHandleSessionStopReturnsWithoutWaitingForIdleSettlement(t *testing.T) {
+	fs := newSessionFakeState(t)
+	h := newTestCityHandler(t, fs)
+
+	mgr := session.NewManager(fs.cityBeadStore, fs.sp)
+	info, err := mgr.Create(context.Background(), "helper", "Claude", "claude", t.TempDir(), "claude", nil, session.ProviderResume{}, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fs.sp.WaitForIdleErrors[info.SessionName] = nil
+	fs.sp.WaitForIdleGates[info.SessionName] = make(chan struct{})
+	fs.sp.WaitForIdleStarted[info.SessionName] = make(chan struct{})
+
+	rec := httptest.NewRecorder()
+	req := newPostRequest(cityURL(fs, "/session/")+info.ID+"/stop", nil)
+
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-fs.sp.WaitForIdleStarted[info.SessionName]:
+		t.Fatal("stop endpoint waited for provider idle settlement")
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("stop endpoint did not return promptly")
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stop status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var sawInterrupt, sawWaitForIdle bool
+	for _, call := range fs.sp.Calls {
+		if call.Method == "Interrupt" && call.Name == info.SessionName {
+			sawInterrupt = true
+		}
+		if call.Method == "WaitForIdle" && call.Name == info.SessionName {
+			sawWaitForIdle = true
+		}
+	}
+	if !sawInterrupt {
+		t.Fatalf("calls = %#v, want Interrupt", fs.sp.Calls)
+	}
+	if sawWaitForIdle {
+		t.Fatalf("calls = %#v, did not want WaitForIdle", fs.sp.Calls)
 	}
 }

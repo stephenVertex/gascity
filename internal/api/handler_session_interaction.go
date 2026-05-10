@@ -106,12 +106,8 @@ func (s *Server) handleSessionStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	handle, err := s.workerHandleForSession(store, id)
-	if err != nil {
-		writeSessionManagerError(w, err)
-		return
-	}
-	if err := handle.Interrupt(r.Context(), worker.InterruptRequest{}); err != nil {
+	mgr := s.sessionManager(store)
+	if err := mgr.RequestStopTurn(r.Context(), id); err != nil {
 		writeSessionManagerError(w, err)
 		return
 	}

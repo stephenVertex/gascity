@@ -970,6 +970,46 @@ func TestStopTurnUsesSoftEscapeAndIdleWaitForCodex(t *testing.T) {
 	}
 }
 
+func TestRequestStopTurnDoesNotWaitForIdleSettlement(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	mgr := NewManager(store, sp)
+
+	info, err := mgr.Create(context.Background(), "helper", "", "codex", t.TempDir(), "codex", nil, ProviderResume{}, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	sp.WaitForIdleErrors[info.SessionName] = nil
+	sp.WaitForIdleGates[info.SessionName] = make(chan struct{})
+	sp.WaitForIdleStarted[info.SessionName] = make(chan struct{})
+
+	if err := mgr.RequestStopTurn(context.Background(), info.ID); err != nil {
+		t.Fatalf("RequestStopTurn: %v", err)
+	}
+
+	var sawEscape, sawInterrupt, sawWaitForIdle, sawWaitForBoundary bool
+	for _, call := range sp.Calls {
+		if call.Method == "SendKeys" && call.Name == info.SessionName && call.Message == "Escape" {
+			sawEscape = true
+		}
+		if call.Method == "Interrupt" && call.Name == info.SessionName {
+			sawInterrupt = true
+		}
+		if call.Method == "WaitForIdle" && call.Name == info.SessionName {
+			sawWaitForIdle = true
+		}
+		if call.Method == "WaitForInterruptBoundary" && call.Name == info.SessionName {
+			sawWaitForBoundary = true
+		}
+	}
+	if !sawEscape {
+		t.Fatalf("calls = %#v, want SendKeys(Escape)", sp.Calls)
+	}
+	if sawInterrupt || sawWaitForIdle || sawWaitForBoundary {
+		t.Fatalf("calls = %#v, did not want interrupt fallback, idle wait, or boundary wait", sp.Calls)
+	}
+}
+
 func TestStopTurnUsesControlCFallbackAfterSoftEscapeTimeoutForCodex(t *testing.T) {
 	store := beads.NewMemStore()
 	sp := runtime.NewFake()
