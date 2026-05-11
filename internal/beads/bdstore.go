@@ -113,7 +113,16 @@ func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
 		// machinery in cmd/gc can republish the Dolt port and rerun the
 		// command against the live server. Scoped to bd to avoid
 		// over-matching.
-		if err == nil && name == "bd" {
+		//
+		// Escape hatch: some rig/city layouts share a Dolt server and bd
+		// emits the auto-import banner on every connect-init even though
+		// the subsequent write does reach the managed server. In those
+		// environments the detector produces false positives and blocks
+		// legitimate work. Set GC_BD_AUTOIMPORT_DETECT=0 to disable the
+		// synthesized error and accept the original bd exit code; the
+		// banner is still visible in telemetry / GC_BD_TRACE for ops to
+		// investigate.
+		if err == nil && name == "bd" && bdAutoImportDetectionEnabled() {
 			if detail := stderr.String(); bdStderrIndicatesAutoImportFallback(detail) {
 				synthErr := fmt.Errorf("bd auto-import fallback detected: %s", strings.TrimSpace(detail))
 				trace("autoimport-fallback", synthErr)
@@ -122,6 +131,22 @@ func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
 		}
 		trace("done", err)
 		return out, err
+	}
+}
+
+// bdAutoImportDetectionEnabled reports whether the auto-import fallback
+// detector should synthesize errors on exit-zero bd invocations. Default
+// is enabled; operators can set GC_BD_AUTOIMPORT_DETECT=0 (or "false",
+// "off", "no") to disable it in environments where bd's auto-import
+// banner is emitted benignly (e.g. shared rig/city Dolt servers) and the
+// detector produces false positives that block legitimate writes.
+func bdAutoImportDetectionEnabled() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("GC_BD_AUTOIMPORT_DETECT")))
+	switch v {
+	case "0", "false", "off", "no":
+		return false
+	default:
+		return true
 	}
 }
 
