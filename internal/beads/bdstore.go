@@ -101,9 +101,44 @@ func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
 				return out, fmt.Errorf("%w: %s", err, detail)
 			}
 		}
+		// bd silently falls back to opening the on-disk .beads/dolt/ store
+		// when it cannot reach the managed Dolt server. That fallback
+		// auto-imports JSONL into an ephemeral database and exits zero, so
+		// the command appears to succeed while operating against state that
+		// will be overwritten by the next auto-import — the "evaporating
+		// writes" bug (gastownhall/gascity#9hd). On stderr this presents as
+		// "auto-importing ... into empty database ...". The error path
+		// (exit != 0) already surfaces stderr into the error; here we
+		// synthesize a non-nil error on exit-zero so the managed-retry
+		// machinery in cmd/gc can republish the Dolt port and rerun the
+		// command against the live server. Scoped to bd to avoid
+		// over-matching.
+		if err == nil && name == "bd" {
+			if detail := stderr.String(); bdStderrIndicatesAutoImportFallback(detail) {
+				synthErr := fmt.Errorf("bd auto-import fallback detected: %s", strings.TrimSpace(detail))
+				trace("autoimport-fallback", synthErr)
+				return out, synthErr
+			}
+		}
 		trace("done", err)
 		return out, err
 	}
+}
+
+// bdStderrIndicatesAutoImportFallback reports whether bd's stderr contains
+// the signature of a silent fallback to the on-disk store. bd emits two
+// companion lines on that path — "auto-importing <N> bytes ... into empty
+// database" and "auto-imported <N> issues ..." — and the "into empty
+// database" fragment uniquely identifies the empty-DB bootstrap that
+// characterizes the fallback. Matching on both "auto-importing" AND "into
+// empty database" keeps the detection narrow enough not to trip on future
+// unrelated bd messages that happen to mention auto-import.
+func bdStderrIndicatesAutoImportFallback(stderr string) bool {
+	if stderr == "" {
+		return false
+	}
+	lower := strings.ToLower(stderr)
+	return strings.Contains(lower, "auto-importing") && strings.Contains(lower, "into empty database")
 }
 
 // bdStdoutErrorDetail extracts a human-readable error description from
