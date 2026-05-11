@@ -17,6 +17,70 @@ import (
 // defaultOutputBufferLines is the default circular buffer size for Peek output.
 const defaultOutputBufferLines = 1000
 
+// acpTraceWriter is the destination for ACP JSON-RPC frame tracing when
+// GC_ACP_TRACE is set. nil disables tracing entirely (checked on every frame
+// hot-path; a nil check is all the cost when tracing is off).
+//
+// Supported GC_ACP_TRACE values:
+//   - "" (unset): tracing disabled.
+//   - "1", "stderr": write frames to the process's stderr.
+//   - any other value: treated as a file path; frames appended to the file.
+//
+// One line per frame, format:
+//
+//	<RFC3339Nano timestamp> <direction> session=<id> <raw JSON>
+//
+// where direction is "send" (gc → agent) or "recv" (agent → gc). The
+// sessionID may be empty for frames before the session/new response lands
+// (handshake traffic).
+//
+// Frames are emitted verbatim, no redaction. Any sensitive prompt content in
+// the JSON body will appear in the trace; use only in local dev / debugging
+// contexts.
+var acpTraceWriter io.Writer
+
+var acpTraceMu sync.Mutex
+
+func init() {
+	setting := strings.TrimSpace(os.Getenv("GC_ACP_TRACE"))
+	switch setting {
+	case "":
+		return
+	case "1", "stderr":
+		acpTraceWriter = os.Stderr
+	default:
+		f, err := os.OpenFile(setting, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "acp: GC_ACP_TRACE=%q: %v — tracing disabled\n", setting, err)
+			return
+		}
+		acpTraceWriter = f
+	}
+}
+
+// traceFrame appends one ACP JSON-RPC frame to the trace sink when
+// GC_ACP_TRACE is set. Safe to call from any goroutine: a package-level mutex
+// serializes writes so lines don't interleave. When tracing is disabled
+// (acpTraceWriter == nil), this is a single pointer compare.
+//
+// direction is "send" for frames gc writes to the agent's stdin, and "recv"
+// for frames gc reads from the agent's stdout.
+func traceFrame(sc *sessionConn, direction string, raw []byte) {
+	if acpTraceWriter == nil {
+		return
+	}
+	sessionID := ""
+	if sc != nil {
+		sc.mu.Lock()
+		sessionID = sc.sessionID
+		sc.mu.Unlock()
+	}
+	acpTraceMu.Lock()
+	fmt.Fprintf(acpTraceWriter, "%s %s session=%s %s\n",
+		time.Now().UTC().Format(time.RFC3339Nano), direction, sessionID, raw)
+	acpTraceMu.Unlock()
+}
+
 // sessionConn tracks a running ACP agent process and its JSON-RPC connection.
 type sessionConn struct {
 	cmd      *exec.Cmd
@@ -85,6 +149,7 @@ func (sc *sessionConn) readLoop(r io.Reader) {
 			continue // skip non-JSON lines (e.g., startup banners)
 		}
 
+		traceFrame(sc, "recv", []byte(line))
 		sc.dispatch(msg)
 	}
 
@@ -179,6 +244,7 @@ func (sc *sessionConn) sendRequest(msg JSONRPCMessage) (chan JSONRPCMessage, err
 	}
 
 	sc.stdinMu.Lock()
+	traceFrame(sc, "send", data)
 	_, err = fmt.Fprintf(sc.stdin, "%s\n", data)
 	sc.stdinMu.Unlock()
 	if err != nil {
@@ -198,6 +264,7 @@ func (sc *sessionConn) sendNotification(msg JSONRPCMessage) error {
 		return fmt.Errorf("marshal: %w", err)
 	}
 	sc.stdinMu.Lock()
+	traceFrame(sc, "send", data)
 	_, err = fmt.Fprintf(sc.stdin, "%s\n", data)
 	sc.stdinMu.Unlock()
 	return err
